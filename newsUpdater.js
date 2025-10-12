@@ -77,10 +77,15 @@ function filterSportsNews(articles) {
   return filtered;
 }
 
-// 💾 Save article to Sanity
+// 💾 Save article to Sanity (skip if no image)
 async function saveToSanity(article, forcedCategory = "general") {
   if (!article.title || article.title.length < 10) {
     console.log(`⚠️ Skipped: Title too short`);
+    return;
+  }
+
+  if (!article.image_url) {
+    console.log(`⚠️ Skipped: No image for "${article.title.slice(0, 50)}..."`);
     return;
   }
 
@@ -98,7 +103,7 @@ async function saveToSanity(article, forcedCategory = "general") {
 
     // Prepare content - use description or create from title
     const content = article.description || article.content || `${article.title}\n\nRead more at the source.`;
-    
+
     // Create new document
     const newDoc = await client.create({
       _type: "news",
@@ -106,7 +111,7 @@ async function saveToSanity(article, forcedCategory = "general") {
       content: content,
       category: forcedCategory,
       categoryClass: getCategoryClass(forcedCategory),
-      image: article.image_url || "https://via.placeholder.com/800x450?text=No+Image",
+      image: article.image_url, // guaranteed to exist now
       source: article.source_name || article.source_id || "Unknown Source",
       link: article.link || "",
       author: article.creator?.[0] || "Trendzlib Editorial",
@@ -122,6 +127,7 @@ async function saveToSanity(article, forcedCategory = "general") {
     }
   }
 }
+
 
 // 🔁 Main update process
 async function updateNews() {
@@ -170,9 +176,47 @@ cron.schedule("0 */4 * * *", () => {
   updateNews();
 });
 
+
+
+// 💥 Delete all news in Sanity
+async function deleteAllNews() {
+  try {
+    console.log("⚠️ Fetching all news IDs to delete...");
+    
+    // Fetch all news document IDs
+    const allNews = await client.fetch('*[_type == "news"]{_id}');
+    if (!allNews.length) {
+      console.log("ℹ️ No news found in Sanity to delete.");
+      return;
+    }
+
+    console.log(`🗑️ Deleting ${allNews.length} news articles...`);
+    
+    // Delete each document
+    for (const news of allNews) {
+      await client.delete(news._id);
+      console.log(`✅ Deleted: ${news._id}`);
+    }
+
+    console.log("🔥 All news deleted successfully!");
+  } catch (error) {
+    console.error("❌ Error deleting news:", error.message);
+    if (error.response) console.error("Response data:", error.response.data);
+  }
+}
+
+// ▶️ Uncomment this line to run the deletion once
+// deleteAllNews();
+
+
+
+
 // ▶️ Run once on start
 console.log("🎬 News fetcher initialized");
 updateNews();
+
+
+
 
 // Keep process alive
 process.on('SIGINT', () => {
