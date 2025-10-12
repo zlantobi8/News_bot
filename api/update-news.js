@@ -82,8 +82,11 @@ async function saveToSanity(article, forcedCategory = "general") {
 }
 
 
-// Main handler
 export default async function handler(req, res) {
+  if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).end("Unauthorized");
+  }
+
   try {
     const entertainmentNews = await fetchNews("entertainment", "ng");
     const sportsNews = filterSportsNews(await fetchNews("sports"));
@@ -103,14 +106,13 @@ export default async function handler(req, res) {
 
     res.status(200).json({
       message: "News updated successfully!",
-      stats: { entertainment: entertainmentCount, sports: sportsCount }
+      stats: { entertainment: entertainmentCount, sports: sportsCount },
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error updating news", error: err.message });
   }
 }
-
 
 // To run this script manually for testing
 
