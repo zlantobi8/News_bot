@@ -45,26 +45,42 @@ function filterSportsNews(articles) {
   );
 }
 
-// Save to Sanity (skip if no image)
-async function saveToSanity(article, forcedCategory) {
-  if (!article.title || !article.image_url) return;
+/// 💾 Save article to Sanity (skip if no image)
+async function saveToSanity(article, forcedCategory = "general") {
+  if (!article.title || article.title.length < 10) return;
+  if (!article.image_url) {
+    console.log(`⚠️ Skipped: No image for "${article.title.slice(0, 50)}..."`);
+    return;
+  }
 
-  const existing = await client.fetch('*[_type == "news" && title == $title][0]', { title: article.title });
-  if (existing) return;
+  try {
+    const existing = await client.fetch('*[_type=="news" && title==$title][0]', { title: article.title });
+    if (existing) return;
 
-  await client.create({
-    _type: "news",
-    title: article.title,
-    content: article.description || article.content || article.title,
-    category: forcedCategory,
-    categoryClass: getCategoryClass(forcedCategory),
-    image: article.image_url,
-    source: article.source_name || article.source_id || "Unknown Source",
-    link: article.link || "",
-    author: article.creator?.[0] || "Trendzlib Editorial",
-    publishedAt: article.pubDate || new Date().toISOString(),
-  });
+    // Generate Cloudinary fetch URL
+    const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.image_url)}`;
+
+    const content = article.description || article.content || `${article.title}\n\nRead more at the source.`;
+
+    await client.create({
+      _type: "news",
+      title: article.title,
+      content,
+      category: forcedCategory,
+      categoryClass: getCategoryClass(forcedCategory),
+      image: cloudinaryUrl, // store optimized image
+      source: article.source_name || article.source_id || "Unknown Source",
+      link: article.link || "",
+      author: article.creator?.[0] || "Trendzlib Editorial",
+      publishedAt: article.pubDate || new Date().toISOString(),
+    });
+
+    console.log(`✅ Saved [${forcedCategory}]: ${article.title.slice(0, 60)}...`);
+  } catch (err) {
+    console.error("❌ Error saving article:", err.message);
+  }
 }
+
 
 // Main handler
 export default async function handler(req, res) {
@@ -94,3 +110,8 @@ export default async function handler(req, res) {
     res.status(500).json({ message: "Error updating news", error: err.message });
   }
 }
+
+
+// To run this script manually for testing
+
+ 
