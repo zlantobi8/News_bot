@@ -29,6 +29,7 @@ function getCategoryClass(category) {
 async function generateDetailedContent(article, category) {
   try {
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+
     const prompt = `You are a professional news writer. Based on the following news headline and brief description, write a detailed, engaging news article of 400-600 words.
 
 Title: ${article.title}
@@ -55,22 +56,29 @@ Article:`;
   }
 }
 
-// --- FETCH NEWS ---
-async function fetchNews(category, country = "us", retries = 3) {
+// --- FETCH FROM NEWSAPI.ORG ---
+async function fetchFromNewsAPI(category, country = "us", retries = 3) {
   const categoryMap = { sport: "sports", entertainment: "entertainment" };
   const mappedCategory = categoryMap[category] || category;
 
   for (let i = 0; i < retries; i++) {
     try {
-      const url = category === "entertainment"
-        ? `https://newsapi.org/v2/top-headlines?apiKey=${process.env.NEWS_API_KEY}&category=${mappedCategory}&pageSize=20`
-        : `https://newsapi.org/v2/top-headlines?apiKey=${process.env.NEWS_API_KEY}&category=${mappedCategory}&country=${country}&pageSize=20`;
-
+      const url = `https://newsapi.org/v2/top-headlines?apiKey=${process.env.NEWSAPI_KEY}&category=${mappedCategory}&country=${country}&pageSize=20`;
       const { data } = await axios.get(url, { timeout: 10000 });
-      console.log(`✓ Fetched ${data.articles?.length || 0} ${category} articles`);
-      return data.articles || [];
+      console.log(`✓ NewsAPI: Fetched ${data.articles?.length || 0} ${category} articles from ${country.toUpperCase()}`);
+      
+      return data.articles.map(article => ({
+        title: article.title,
+        description: article.description,
+        content: article.content,
+        urlToImage: article.urlToImage,
+        url: article.url,
+        source: { name: article.source?.name },
+        author: article.author,
+        publishedAt: article.publishedAt
+      }));
     } catch (error) {
-      console.error(`Attempt ${i + 1}/${retries} failed for ${category}:`, error.message);
+      console.error(`NewsAPI attempt ${i + 1}/${retries} failed:`, error.message);
       if (i === retries - 1) return [];
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
@@ -78,9 +86,60 @@ async function fetchNews(category, country = "us", retries = 3) {
   return [];
 }
 
-// --- FILTER ARTICLES (skip only those without title or image) ---
+// --- FETCH FROM NEWSDATA.IO ---
+async function fetchFromNewsData(category, country = "ng", retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const url = `https://newsdata.io/api/1/news?apikey=${process.env.NEWSDATA_KEY}&category=${category}&country=${country}&language=en`;
+      const { data } = await axios.get(url, { timeout: 10000 });
+      console.log(`✓ NewsData: Fetched ${data.results?.length || 0} ${category} articles from ${country.toUpperCase()}`);
+      
+      return data.results.map(article => ({
+        title: article.title,
+        description: article.description,
+        content: article.content,
+        urlToImage: article.image_url,
+        url: article.link,
+        source: { name: article.source_name || article.source_id },
+        author: article.creator?.[0],
+        publishedAt: article.pubDate
+      }));
+    } catch (error) {
+      console.error(`NewsData attempt ${i + 1}/${retries} failed:`, error.message);
+      if (i === retries - 1) return [];
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+  return [];
+}
+
+// --- FETCH ENTERTAINMENT (Worldwide) ---
+async function fetchEntertainment() {
+  console.log("\n📰 Fetching Entertainment News...");
+  
+  const newsAPIArticles = await fetchFromNewsAPI("entertainment", "us");
+  const newsDataArticles = await fetchFromNewsData("entertainment", "ng");
+  
+  const combined = [...newsDataArticles, ...newsAPIArticles];
+  const unique = combined.filter((article, index, self) =>
+    index === self.findIndex(a => a.title === article.title)
+  );
+  
+  console.log(`   Combined: ${unique.length} unique entertainment articles`);
+  return unique;
+}
+
+// --- FETCH SPORTS (NewsAPI only) ---
+async function fetchSports() {
+  console.log("\n📰 Fetching Sports News...");
+  return await fetchFromNewsAPI("sport", "us");
+}
+
+// --- FILTER ARTICLES ---
 function filterArticles(articles) {
-  return articles.filter(article => article.title && article.title.length > 5 && article.urlToImage);
+  return articles.filter(article => 
+    article.title && article.title.length > 10 && article.urlToImage
+  );
 }
 
 // --- SAVE ARTICLE TO SANITY ---
@@ -88,13 +147,13 @@ async function saveToSanity(article, forcedCategory = "general") {
   try {
     const existing = await client.fetch('*[_type=="news" && title==$title][0]', { title: article.title });
     if (existing) {
-      console.log(`⏭️ Already exists: ${article.title.slice(0, 60)}...`);
+      console.log(`   ⏭️ Already exists: ${article.title.slice(0, 60)}...`);
       return false;
     }
 
     const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.urlToImage)}`;
 
-    console.log(`🤖 Generating content for: "${article.title.slice(0, 50)}..."`);
+    console.log(`   🤖 Generating AI content: "${article.title.slice(0, 50)}..."`);
     const detailedContent = await generateDetailedContent(article, forcedCategory);
 
     await client.create({
@@ -110,11 +169,11 @@ async function saveToSanity(article, forcedCategory = "general") {
       publishedAt: article.publishedAt || new Date().toISOString(),
     });
 
-    console.log(`✅ Saved [${forcedCategory}]: ${article.title.slice(0, 60)}...`);
+    console.log(`   ✅ Saved [${forcedCategory}]: ${article.title.slice(0, 60)}...`);
     return true;
 
   } catch (err) {
-    console.error(`❌ Error saving: ${err.message}`);
+    console.error(`   ❌ Error saving: ${err.message}`);
     return false;
   }
 }
@@ -126,23 +185,24 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log("Starting news update with AI content generation...");
+    console.log("Starting news update with dual API + AI generation...");
 
-    // Fetch and filter worldwide entertainment news
-    const entertainmentNews = filterArticles(await fetchNews("entertainment"));
-
-    // Fetch and filter US sports news
-    const sportsNews = filterArticles(await fetchNews("sport", "us"));
+    const entertainmentNews = filterArticles(await fetchEntertainment());
+    const sportsNews = filterArticles(await fetchSports());
 
     let entertainmentCount = 0;
     let sportsCount = 0;
 
-    for (const article of entertainmentNews.slice(0, 10)) {
+    // Save up to 10 valid entertainment articles
+    for (const article of entertainmentNews) {
       if (await saveToSanity(article, "entertainment")) entertainmentCount++;
+      if (entertainmentCount >= 10) break;
     }
 
-    for (const article of sportsNews.slice(0, 10)) {
+    // Save up to 10 valid sports articles
+    for (const article of sportsNews) {
       if (await saveToSanity(article, "sport")) sportsCount++;
+      if (sportsCount >= 10) break;
     }
 
     res.status(200).json({
@@ -162,28 +222,33 @@ export default async function handler(req, res) {
 
 // --- TEST RUN ---
 async function runTest() {
-  console.log("🚀 Starting News Update Test with FREE Gemini AI\n");
+  console.log("🚀 Starting News Update Test (Dual API + AI)\n");
   console.log("=".repeat(60));
 
   try {
-    const entertainmentNews = filterArticles(await fetchNews("entertainment"));
-    const sportsNews = filterArticles(await fetchNews("sport", "us"));
+    const entertainmentNews = filterArticles(await fetchEntertainment());
+    const sportsNews = filterArticles(await fetchSports());
 
     let entertainmentCount = 0;
     let sportsCount = 0;
 
-    console.log("📺 Processing Entertainment News:");
-    for (const article of entertainmentNews.slice(0, 5)) {
+    console.log("\n📺 Processing Entertainment News:");
+    for (const article of entertainmentNews) {
       if (await saveToSanity(article, "entertainment")) entertainmentCount++;
+      if (entertainmentCount >= 10) break;
     }
 
     console.log("\n⚽ Processing Sports News:");
-    for (const article of sportsNews.slice(0, 5)) {
+    for (const article of sportsNews) {
       if (await saveToSanity(article, "sport")) sportsCount++;
+      if (sportsCount >= 10) break;
     }
 
     console.log("\n" + "=".repeat(60));
-    console.log(`📊 RESULTS:\n   Entertainment: ${entertainmentCount}\n   Sports: ${sportsCount}\n   Total: ${entertainmentCount + sportsCount}`);
+    console.log(`\n📊 RESULTS:`);
+    console.log(`   Entertainment: ${entertainmentCount} saved`);
+    console.log(`   Sports: ${sportsCount} saved`);
+    console.log(`   Total: ${entertainmentCount + sportsCount} articles\n`);
     console.log("✅ Test completed successfully!\n");
 
   } catch (err) {
@@ -192,4 +257,4 @@ async function runTest() {
 }
 
 // Run the test
-runTest();
+
