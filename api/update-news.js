@@ -21,14 +21,24 @@ function getCategoryClass(category) {
   return classMap[category] || "tag-base-sm bg-secondary";
 }
 
-// Fetch news
-async function fetchNews(category, country = "") {
+// Fetch news from NewsAPI.org
+async function fetchNews(category, country = "ng") {
   try {
-    const url = `https://newsdata.io/api/1/news?apikey=${process.env.NEWS_API_KEY}&category=${category}${country ? `&country=${country}` : ""}&language=en`;
+    // NewsAPI uses different category names
+    const categoryMap = {
+      sport: "sports",
+      entertainment: "entertainment",
+    };
+    
+    const mappedCategory = categoryMap[category] || category;
+    
+    // Use top-headlines endpoint for better quality news
+    const url = `https://newsapi.org/v2/top-headlines?apiKey=${process.env.NEWS_API_KEY}&category=${mappedCategory}&country=${country}&pageSize=20`;
+    
     const { data } = await axios.get(url);
-    return data.results || [];
+    return data.articles || [];
   } catch (error) {
-    console.error(error);
+    console.error(`Error fetching ${category} news:`, error.response?.data || error.message);
     return [];
   }
 }
@@ -48,7 +58,9 @@ function filterSportsNews(articles) {
 /// 💾 Save article to Sanity (skip if no image)
 async function saveToSanity(article, forcedCategory = "general") {
   if (!article.title || article.title.length < 10) return false;
-  if (!article.image_url) {
+  
+  // NewsAPI uses 'urlToImage' instead of 'image_url'
+  if (!article.urlToImage) {
     console.log(`⚠️ Skipped: No image for "${article.title.slice(0, 50)}..."`);
     return false;
   }
@@ -61,9 +73,10 @@ async function saveToSanity(article, forcedCategory = "general") {
     }
 
     // Generate Cloudinary fetch URL
-    const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.image_url)}`;
+    const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.urlToImage)}`;
 
-    const content = article.description || article.content || `${article.title}\n\nRead more at the source.`;
+    // NewsAPI provides better content in 'description' and 'content' fields
+    const content = article.content || article.description || `${article.title}\n\nRead more at the source.`;
 
     await client.create({
       _type: "news",
@@ -72,17 +85,17 @@ async function saveToSanity(article, forcedCategory = "general") {
       category: forcedCategory,
       categoryClass: getCategoryClass(forcedCategory),
       image: cloudinaryUrl,
-      source: article.source_name || article.source_id || "Unknown Source",
-      link: article.link || "",
-      author: article.creator?.[0] || "Trendzlib Editorial",
-      publishedAt: article.pubDate || new Date().toISOString(),
+      source: article.source?.name || "Unknown Source",
+      link: article.url || "",
+      author: article.author || "Trendzlib Editorial",
+      publishedAt: article.publishedAt || new Date().toISOString(),
     });
 
     console.log(`✅ Saved [${forcedCategory}]: ${article.title.slice(0, 60)}...`);
-    return true; // ✅ RETURN TRUE ON SUCCESS
+    return true;
   } catch (err) {
     console.error("❌ Error saving article:", err.message);
-    return false; // ✅ RETURN FALSE ON ERROR
+    return false;
   }
 }
 
@@ -93,27 +106,35 @@ export default async function handler(req, res) {
 
   try {
     const entertainmentNews = await fetchNews("entertainment", "ng");
-    const sportsNews = filterSportsNews(await fetchNews("sports"));
+    const sportsNews = await fetchNews("sport", "us"); // US has better sports coverage
 
     let entertainmentCount = 0;
     let sportsCount = 0;
 
+    // Process entertainment news
     for (const article of entertainmentNews.slice(0, 10)) {
       const saved = await saveToSanity(article, "entertainment");
       if (saved) entertainmentCount++;
     }
 
-    for (const article of sportsNews.slice(0, 10)) {
+    // Process and filter sports news
+    const filteredSports = filterSportsNews(sportsNews);
+    for (const article of filteredSports.slice(0, 10)) {
       const saved = await saveToSanity(article, "sport");
       if (saved) sportsCount++;
     }
 
     res.status(200).json({
       message: "News updated successfully!",
-      stats: { entertainment: entertainmentCount, sports: sportsCount },
+      stats: { 
+        entertainment: entertainmentCount, 
+        sports: sportsCount,
+        totalFetched: { entertainment: entertainmentNews.length, sports: filteredSports.length }
+      },
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error updating news", error: err.message });
   }
 }
+handler()
