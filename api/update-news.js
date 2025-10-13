@@ -47,15 +47,18 @@ function filterSportsNews(articles) {
 
 /// 💾 Save article to Sanity (skip if no image)
 async function saveToSanity(article, forcedCategory = "general") {
-  if (!article.title || article.title.length < 10) return;
+  if (!article.title || article.title.length < 10) return false;
   if (!article.image_url) {
     console.log(`⚠️ Skipped: No image for "${article.title.slice(0, 50)}..."`);
-    return;
+    return false;
   }
 
   try {
     const existing = await client.fetch('*[_type=="news" && title==$title][0]', { title: article.title });
-    if (existing) return;
+    if (existing) {
+      console.log(`⏭️ Already exists: ${article.title.slice(0, 60)}...`);
+      return false;
+    }
 
     // Generate Cloudinary fetch URL
     const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.image_url)}`;
@@ -68,7 +71,7 @@ async function saveToSanity(article, forcedCategory = "general") {
       content,
       category: forcedCategory,
       categoryClass: getCategoryClass(forcedCategory),
-      image: cloudinaryUrl, // store optimized image
+      image: cloudinaryUrl,
       source: article.source_name || article.source_id || "Unknown Source",
       link: article.link || "",
       author: article.creator?.[0] || "Trendzlib Editorial",
@@ -76,11 +79,12 @@ async function saveToSanity(article, forcedCategory = "general") {
     });
 
     console.log(`✅ Saved [${forcedCategory}]: ${article.title.slice(0, 60)}...`);
+    return true; // ✅ RETURN TRUE ON SUCCESS
   } catch (err) {
     console.error("❌ Error saving article:", err.message);
+    return false; // ✅ RETURN FALSE ON ERROR
   }
 }
-
 
 export default async function handler(req, res) {
   if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -113,7 +117,3 @@ export default async function handler(req, res) {
     res.status(500).json({ message: "Error updating news", error: err.message });
   }
 }
-
-// To run this script manually for testing
-
- 
