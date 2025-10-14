@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 dotenv.config();
 import axios from "axios";
 import { TwitterApi } from "twitter-api-v2";
+import fs from "fs";
 
 // --- CONFIGURE TWITTER CLIENT ---
 const twitterClient = new TwitterApi({
@@ -45,33 +46,30 @@ function sanitizeText(text) {
 
 // --- SHORTEN URL IF BLOCKED ---
 async function shortenUrlIfBlocked(url) {
+  const encoded = encodeURI(url);
   try {
-    // Test if domain is allowed
-    await twitterClient.v2.tweet({
-      text: `Testing ${url}`,
-    });
+    await twitterClient.v2.tweet({ text: `Testing ${encoded}` });
     console.log("✅ Domain allowed by Twitter.");
-    return url;
+    return encoded;
   } catch (err) {
-    const isInvalid = err?.data?.errors?.some((e) =>
-      e.message?.includes("invalid URL")
+    const isInvalid = err?.data?.errors?.some(e =>
+      e.message?.toLowerCase().includes("invalid url")
     );
-
     if (isInvalid) {
       console.log("⚠️ Domain blocked — shortening via TinyURL...");
       try {
-        const response = await axios.get(
-          `https://tinyurl.com/api-create.php?url=${encodeURIComponent(url)}`
+        const res = await axios.get(
+          `https://tinyurl.com/api-create.php?url=${encodeURIComponent(encoded)}`
         );
-        console.log(`🔗 Shortened URL: ${response.data}`);
-        return response.data;
+        console.log(`🔗 Shortened URL: ${res.data}`);
+        return res.data;
       } catch (shortErr) {
         console.error("❌ TinyURL shortening failed:", shortErr.message);
-        return url;
+        return encoded;
       }
     } else {
-      console.error("❌ Unknown error testing URL:", err.message);
-      return url;
+      console.error("❌ Unknown tweet test error:", err.message);
+      return encoded;
     }
   }
 }
@@ -79,96 +77,100 @@ async function shortenUrlIfBlocked(url) {
 // --- PICK BEST ARTICLE ---
 function pickBestArticle(articles) {
   return articles
-    .filter((a) => a.title && (a.content || a.description) && a.urlToImage)
-    .sort((a, b) => {
-      const aLength = (a.content || a.description || "").length;
-      const bLength = (b.content || b.description || "").length;
-      return bLength - aLength;
-    })[0];
+    .filter(a => a.title && (a.content || a.description) && a.urlToImage)
+    .sort((a, b) => ((b.content || b.description || "").length -
+                     (a.content || a.description || "").length))[0];
 }
 
-// --- DOWNLOAD IMAGE ---
+// --- DOWNLOAD IMAGE BUFFER ---
 async function downloadImageBuffer(url) {
-  console.log(`   Image URL: ${url}`);
-  const response = await axios.get(url, {
-    responseType: "arraybuffer",
-    timeout: 20000,
-    maxContentLength: 5 * 1024 * 1024,
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    },
-  });
-  const buffer = Buffer.from(response.data, "binary");
-  console.log(`   Image size: ${(buffer.length / 1024).toFixed(2)} KB`);
-  return buffer;
+  try {
+    console.log(`   Image URL: ${url}`);
+    const res = await axios.get(url, {
+      responseType: "arraybuffer",
+      timeout: 20000,
+      maxContentLength: 5 * 1024 * 1024,
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+    });
+    const buf = Buffer.from(res.data, "binary");
+    console.log(`   Image size: ${(buf.length / 1024).toFixed(2)} KB`);
+    return buf;
+  } catch (err) {
+    console.error(`⚠️ Failed to download image: ${err.message}`);
+    return null;
+  }
 }
 
 // --- CREATE TWEET TEXT ---
 function createTweetText(article, postUrl) {
   const title = sanitizeText(article.title);
   const source = sanitizeText(article.content || article.description || "");
-  const words = source.split(" ");
-  const snippet = words.slice(0, 50).join(" ") + (words.length > 50 ? "..." : "");
+  const snippet = source.split(" ").slice(0, 50).join(" ") +
+    (source.split(" ").length > 50 ? "..." : "");
   const readMore = `\n\nRead more 🔗 ${postUrl}`;
-  let tweetText = `${title}\n\n${snippet}${readMore}`;
-
-  // Trim to 280 chars max
-  if (tweetText.length > 280) {
-    const maxSnippetLength = 280 - title.length - readMore.length - 5;
-    const truncatedSnippet = snippet.substring(0, maxSnippetLength) + "...";
-    tweetText = `${title}\n\n${truncatedSnippet}${readMore}`;
+  let tweet = `${title}\n\n${snippet}${readMore}`;
+  if (tweet.length > 280) {
+    const maxSnippet = 280 - title.length - readMore.length - 5;
+    tweet = `${title}\n\n${snippet.substring(0, maxSnippet)}...${readMore}`;
   }
-
-  return tweetText;
+  return tweet;
 }
 
 // --- POST TO X ---
 async function postToX(article) {
   try {
     console.log(`\n🐦 Preparing to post: "${article.title.slice(0, 60)}..."`);
+    if (!article.title) throw new Error("❌ Missing article title");
 
-    if (!article.title || !article.urlToImage) {
-      throw new Error("❌ Missing title or image in article");
-    }
-
-    // Create and verify post URL
+    // Create & verify link
     let postUrl = createPostUrl(article);
     postUrl = await shortenUrlIfBlocked(postUrl);
 
-    // Create tweet text
+    // Build tweet text
     const tweetText = createTweetText(article, postUrl);
     console.log(`   Tweet length: ${tweetText.length}`);
-    console.log(`   Tweet preview: ${tweetText.slice(0, 150)}...`);
+    console.log(`   Preview: ${tweetText.slice(0, 120)}...`);
 
-    // Download image
-    console.log(`   Downloading image...`);
-    const imageBuffer = await downloadImageBuffer(article.urlToImage);
+    // Try image upload
+    let mediaId = null;
+    if (article.urlToImage) {
+      console.log("   Downloading image...");
+      const imgBuffer = await downloadImageBuffer(article.urlToImage);
+      if (imgBuffer) {
+        try {
+          mediaId = await twitterClient.v1.uploadMedia(imgBuffer, { mimeType: "image/jpeg" });
+          console.log(`   ✅ Uploaded image (Media ID: ${mediaId})`);
+        } catch (uploadErr) {
+          console.error(`⚠️ Image upload failed: ${uploadErr.message}`);
+        }
+      }
+    }
 
-    // Upload image
-    console.log(`   Uploading image...`);
-    const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, {
-      mimeType: "image/jpeg",
-    });
-    console.log(`   Media ID: ${mediaId}`);
+    // Prepare tweet payload
+    const payload = mediaId
+      ? { text: tweetText, media: { media_ids: [mediaId] } }
+      : { text: tweetText };
 
-    // Post tweet
-    console.log(`   Posting tweet...`);
-    const tweet = await twitterClient.v2.tweet({
-      text: tweetText,
-      media: { media_ids: [mediaId] },
-    });
-
-    console.log(`✅ Posted to X successfully!`);
-    console.log(`   Tweet ID: ${tweet.data.id}`);
-    console.log(`   View: https://twitter.com/i/web/status/${tweet.data.id}`);
-    return tweet.data;
-
+    // Try up to 3 times if network fails
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(`   Posting tweet (attempt ${attempt})...`);
+        const tweet = await twitterClient.v2.tweet(payload);
+        console.log("✅ Posted successfully!");
+        console.log(`   Tweet ID: ${tweet.data.id}`);
+        console.log(`   View: https://twitter.com/i/web/status/${tweet.data.id}`);
+        return tweet.data;
+      } catch (err) {
+        if (attempt === 3) throw err;
+        console.log(`⚠️ Post failed (${attempt}/3) — retrying in 2s...`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
   } catch (error) {
     console.error("\n❌ Error posting to X:");
-    console.error(`   Message: ${error.message}`);
-    if (error.data) console.error(`   Data: ${JSON.stringify(error.data, null, 2)}`);
-    if (error.errors) console.error(`   Errors: ${JSON.stringify(error.errors, null, 2)}`);
-    throw error;
+    console.error("   Message:", error.message);
+    if (error.data) console.error("   Data:", JSON.stringify(error.data, null, 2));
+    if (error.errors) console.error("   Errors:", JSON.stringify(error.errors, null, 2));
   }
 }
 

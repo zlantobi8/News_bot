@@ -14,9 +14,7 @@ async function testTwitter() {
     const me = await client.v2.me();
 
     console.log("✅ Connected as:", me.data.username);
-    await client.v2.tweet({
-      text: "Testing link https://www.trendzlib.com.ng"
-    });
+
 
   } catch (err) {
     console.error("❌ Twitter Auth Failed:", err.message);
