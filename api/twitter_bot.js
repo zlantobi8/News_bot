@@ -31,7 +31,7 @@ function createPostUrl(post) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   const slug = generateSlug(post.title);
-  return `https://www.trendzlib.com.ng/${year}/${month}/${day}/${slug}`;
+  return `https://www.trendzlib.com/${year}/${month}/${day}/${slug}`;
 }
 
 // --- PICK BEST ARTICLE ---
@@ -81,49 +81,67 @@ function createTweetText(article, postUrl) {
   const source = article.content || article.description || '';
   
   if (source) {
-    // Split into sentences
-    const sentences = source.split(/[.!?]+/).filter(s => s.trim().length > 0);
+    // Clean up the content first (remove extra whitespace, newlines)
+    const cleanContent = source.replace(/\s+/g, ' ').trim();
     
-    // Calculate how many sentences fit (aim for ~half the gist)
+    // Split into proper sentences (accounting for abbreviations)
+    const sentences = cleanContent
+      .split(/(?<=[.!?])\s+(?=[A-Z])/)
+      .filter(s => s.trim().length > 10); // Filter out very short fragments
+    
+    // Calculate available space for snippet
     const readMore = `\n\nRead more: ${postUrl}`;
     const baseLength = title.length + readMore.length + 4; // 4 for \n\n spacing
     const availableLength = 280 - baseLength;
     
-    // Build snippet sentence by sentence until we reach ~80% of available space
-    let currentSnippet = '';
-    const targetLength = Math.floor(availableLength * 0.8); // Use 80% to leave room
+    // Aim to use 85% of available space for maximum content
+    const targetLength = Math.floor(availableLength * 0.85);
     
-    for (let i = 0; i < sentences.length; i++) {
-      const sentence = sentences[i].trim() + '.';
-      const testSnippet = currentSnippet ? `${currentSnippet} ${sentence}` : sentence;
+    // Build snippet sentence by sentence
+    let currentSnippet = '';
+    
+    for (let i = 0; i < sentences.length && i < 8; i++) { // Cap at 8 sentences max
+      const sentence = sentences[i].trim();
+      const testSnippet = currentSnippet 
+        ? `${currentSnippet} ${sentence}` 
+        : sentence;
       
       if (testSnippet.length <= targetLength) {
         currentSnippet = testSnippet;
       } else {
+        // If we haven't added any sentences yet, truncate this one
+        if (!currentSnippet && targetLength > 100) {
+          currentSnippet = sentence.substring(0, targetLength - 3) + '...';
+        }
         break;
       }
     }
     
-    snippet = currentSnippet || sentences.slice(0, 2).join('. ') + '.'; // Fallback to 2 sentences
+    // Fallback: if snippet is too short, take first chunk of content
+    if (currentSnippet.length < 100 && targetLength > 100) {
+      currentSnippet = cleanContent.substring(0, targetLength - 3) + '...';
+    }
+    
+    snippet = currentSnippet;
   }
   
-  // Build tweet with link
+  // Build final tweet
   const readMore = `\n\nRead more: ${postUrl}`;
   const tweetText = snippet 
     ? `${title}\n\n${snippet}${readMore}`
     : `${title}${readMore}`;
   
-  // Final safety check and truncation
+  // Final safety check - ensure we're under 280 chars
   if (tweetText.length > 280) {
-    const readMore = `\n\nRead more: ${postUrl}`;
     const maxSnippetLength = 280 - title.length - readMore.length - 4;
     
-    if (maxSnippetLength > 50) {
+    if (maxSnippetLength > 80) {
       const truncatedSnippet = snippet.substring(0, maxSnippetLength - 3) + '...';
       return `${title}\n\n${truncatedSnippet}${readMore}`;
     } else {
-      // Title too long, truncate title instead
-      const truncatedTitle = title.substring(0, 280 - readMore.length - 3) + '...';
+      // Title is too long, truncate it
+      const maxTitleLength = 280 - readMore.length - 10;
+      const truncatedTitle = title.substring(0, maxTitleLength - 3) + '...';
       return `${truncatedTitle}${readMore}`;
     }
   }
@@ -146,9 +164,15 @@ async function postToX(article) {
     
     // Create post URL and tweet text
     const postUrl = createPostUrl(article);
+    
+    // Debug: Show content info
+    const contentLength = (article.content || article.description || '').length;
+    console.log(`   Content available: ${contentLength} characters`);
+    
     const tweetText = createTweetText(article, postUrl);
     
     console.log(`   Tweet length: ${tweetText.length} characters`);
+    console.log(`   Tweet preview: ${tweetText.substring(0, 150)}...`);
     
     // Download and upload image
     console.log(`   Downloading image...`);

@@ -139,7 +139,7 @@ async function fetchSports() {
 // --- FILTER ARTICLES ---
 function filterArticles(articles) {
   return articles.filter(article =>
-    article.title && article.title.length > 1 && article.urlToImage
+    article.title && article.title.length > 5 && article.urlToImage
   );
 }
 
@@ -149,7 +149,7 @@ async function saveToSanity(article, forcedCategory = "general") {
     const existing = await client.fetch('*[_type=="news" && title==$title][0]', { title: article.title });
     if (existing) {
       console.log(`   ⏭️ Already exists: ${article.title.slice(0, 60)}...`);
-      return null; // Return null if not saved
+      return null;
     }
 
     const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.urlToImage)}`;
@@ -172,10 +172,9 @@ async function saveToSanity(article, forcedCategory = "general") {
 
     console.log(`   ✅ Saved [${forcedCategory}]: ${article.title.slice(0, 60)}...`);
     
-    // Return the enhanced article with AI content for Twitter
     return {
       ...article,
-      content: detailedContent, // Use AI-generated content
+      content: detailedContent,
       category: forcedCategory
     };
 
@@ -185,63 +184,62 @@ async function saveToSanity(article, forcedCategory = "general") {
   }
 }
 
-// --- MAIN HANDLER ---
+// --- MAIN HANDLER (Called by Vercel Cron) ---
 export default async function handler(req, res) {
+  // Security check for cron job
   if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).end("Unauthorized");
   }
 
   try {
-    console.log("Starting news update with dual API + AI generation...");
+    console.log("🚀 Starting automated news update...");
 
     const entertainmentNews = filterArticles(await fetchEntertainment());
     const sportsNews = filterArticles(await fetchSports());
 
     let entertainmentCount = 0;
     let sportsCount = 0;
-    
-    // Track articles that were actually saved WITH AI content
     const savedArticles = [];
 
-    // Save up to 1 valid entertainment article
+    // Save entertainment articles
     for (const article of entertainmentNews) {
       const savedArticle = await saveToSanity(article, "entertainment");
       if (savedArticle) {
         entertainmentCount++;
-        savedArticles.push(savedArticle); // Push enhanced article with AI content
-        if (entertainmentCount >= 1) break;
+        savedArticles.push(savedArticle);
+        if (entertainmentCount >= 5) break;
       }
     }
 
-    // Save up to 1 valid sports article
+    // Save sports articles
     for (const article of sportsNews) {
       const savedArticle = await saveToSanity(article, "sport");
       if (savedArticle) {
         sportsCount++;
-        savedArticles.push(savedArticle); // Push enhanced article with AI content
-        if (sportsCount >= 1) break;
+        savedArticles.push(savedArticle);
+        if (sportsCount >= 5) break;
       }
     }
 
-    // 🐦 POST TO TWITTER - Use article with AI-generated content
+    // Post to Twitter
     let twitterSuccess = false;
     const bestArticle = pickBestArticle(savedArticles);
 
     if (bestArticle) {
-      console.log("\n🚀 Posting best article to X (with AI content)...");
+      console.log("\n🚀 Posting best article to X...");
       try {
-        await postToX(bestArticle); // Now uses Gemini-generated content
+        await postToX(bestArticle);
         twitterSuccess = true;
+        console.log("✅ Twitter post successful!");
       } catch (error) {
-        console.error("Twitter posting failed:", error.message);
+        console.error("❌ Twitter posting failed:", error.message);
       }
     } else {
-      console.log("\n⚠️ No articles were saved, skipping Twitter post");
+      console.log("\n⚠️ No new articles to post");
     }
 
-    // Now send response with all results
     res.status(200).json({
-      message: "News updated successfully with AI-generated content!",
+      message: "News updated successfully!",
       stats: {
         entertainment: entertainmentCount,
         sports: sportsCount,
@@ -259,9 +257,12 @@ export default async function handler(req, res) {
   }
 }
 
-// --- TEST RUN ---
+// --- LOCAL TESTING ONLY ---
+// Uncomment this line to test locally, comment out before deploying
+// runTest();
+
 async function runTest() {
-  console.log("🚀 Starting News Update Test (Dual API + AI)\n");
+  console.log("🚀 Starting News Update Test\n");
   console.log("=".repeat(60));
 
   try {
@@ -270,8 +271,6 @@ async function runTest() {
 
     let entertainmentCount = 0;
     let sportsCount = 0;
-    
-    // Track articles that were actually saved WITH AI content
     const savedArticles = [];
 
     console.log("\n📺 Processing Entertainment News:");
@@ -279,8 +278,8 @@ async function runTest() {
       const savedArticle = await saveToSanity(article, "entertainment");
       if (savedArticle) {
         entertainmentCount++;
-        savedArticles.push(savedArticle); // Push enhanced article with AI content
-        if (entertainmentCount >= 1) break;
+        savedArticles.push(savedArticle);
+        if (entertainmentCount >= 5) break;
       }
     }
 
@@ -289,12 +288,12 @@ async function runTest() {
       const savedArticle = await saveToSanity(article, "sport");
       if (savedArticle) {
         sportsCount++;
-        savedArticles.push(savedArticle); // Push enhanced article with AI content
-        if (sportsCount >= 1) break;
+        savedArticles.push(savedArticle);
+        if (sportsCount >= 5) break;
       }
     }
 
-    // 🐦 POST TO TWITTER - Use article with AI-generated content
+    // Post to Twitter
     let twitterSuccess = false;
     const bestArticle = pickBestArticle(savedArticles);
 
@@ -302,14 +301,14 @@ async function runTest() {
       console.log("\n🚀 Posting best article to X (with AI content)...");
       console.log(`   Article has AI content: ${bestArticle.content ? 'YES ✅' : 'NO ❌'}`);
       try {
-        await postToX(bestArticle); // Now uses Gemini-generated content
+        await postToX(bestArticle);
         twitterSuccess = true;
         console.log("✅ Twitter post successful!");
       } catch (error) {
         console.error("❌ Twitter posting failed:", error.message);
       }
     } else {
-      console.log("\n⚠️ No articles were saved, skipping Twitter post");
+      console.log("\n⚠️ No articles were saved");
     }
 
     console.log("\n" + "=".repeat(60));
@@ -324,5 +323,4 @@ async function runTest() {
     console.error("\n❌ TEST FAILED:", err.message);
   }
 }
-
 runTest();
