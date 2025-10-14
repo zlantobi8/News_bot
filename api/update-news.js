@@ -27,11 +27,15 @@ function getCategoryClass(category) {
 }
 
 // --- GENERATE DETAILED CONTENT ---
+// Automatically switches between Gemini models if one quota finishes
 async function generateDetailedContent(article, category) {
-  try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+  const models = [
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+    { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro" },
+    { id: "gemini-1.0-pro", name: "Gemini 1.0 Pro" },
+  ];
 
-    const prompt = `You are a professional news writer. Based on the following news headline and brief description, write a detailed, engaging news article of 400-600 words.
+  const prompt = `You are a professional news writer. Based on the following news headline and brief description, write a detailed, engaging news article of 400-600 words.
 
 Title: ${article.title}
 Description: ${article.description || "No description available"}
@@ -48,13 +52,35 @@ Write a comprehensive article that:
 
 Article:`;
 
-    const result = await model.generateContent(prompt);
-    return result.response.text().trim();
+  for (const modelInfo of models) {
+    try {
+      console.log(`🤖 Generating with ${modelInfo.name}...`);
+      const model = genAI.getGenerativeModel({ model: modelInfo.id });
+      const result = await model.generateContent(prompt);
+      const text = result.response.text().trim();
 
-  } catch (error) {
-    console.error(`AI generation failed: ${error.message}`);
-    return article.content || article.description || `${article.title}\n\nRead more at the source.`;
+      if (text && text.length > 50) {
+        console.log(`✅ Success with ${modelInfo.name}`);
+        return text;
+      }
+    } catch (error) {
+      console.error(`❌ ${modelInfo.name} failed: ${error.message}`);
+      if (error.message.includes("429") || error.message.includes("quota")) {
+        console.warn(`⚠️ Quota hit for ${modelInfo.name}, switching model...`);
+        continue; // try next Gemini version
+      } else {
+        // unexpected error (network, timeout, etc.)
+        continue;
+      }
+    }
   }
+
+  console.error("⚠️ All Gemini models failed. Using fallback content.");
+  return (
+    article.content ||
+    article.description ||
+    `${article.title}\n\nRead more at the source.`
+  );
 }
 
 // --- FETCH FROM NEWSAPI.ORG ---
@@ -143,7 +169,7 @@ function filterArticles(articles) {
   );
 }
 
-// --- SAVE ARTICLE TO SANITY (Modified to return enhanced article) ---
+// --- SAVE ARTICLE TO SANITY ---
 async function saveToSanity(article, forcedCategory = "general") {
   try {
     const existing = await client.fetch('*[_type=="news" && title==$title][0]', { title: article.title });
@@ -186,7 +212,6 @@ async function saveToSanity(article, forcedCategory = "general") {
 
 // --- MAIN HANDLER (Called by Vercel Cron) ---
 export default async function handler(req, res) {
-  // Security check for cron job
   if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).end("Unauthorized");
   }
@@ -257,10 +282,7 @@ export default async function handler(req, res) {
   }
 }
 
-// --- LOCAL TESTING ONLY ---
-// Uncomment this line to test locally, comment out before deploying
-// runTest();
-
+// --- LOCAL TESTING ---
 async function runTest() {
   console.log("🚀 Starting News Update Test\n");
   console.log("=".repeat(60));
@@ -323,4 +345,5 @@ async function runTest() {
     console.error("\n❌ TEST FAILED:", err.message);
   }
 }
+
 runTest();
