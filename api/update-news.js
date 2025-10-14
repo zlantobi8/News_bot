@@ -206,30 +206,39 @@ export default async function handler(req, res) {
       if (sportsCount >= 1) break;
     }
 
+    // 🐦 POST TO TWITTER BEFORE SENDING RESPONSE
+    let twitterSuccess = false;
+    const bestArticle = pickBestArticle([...entertainmentNews, ...sportsNews]);
+
+    if (bestArticle) {
+      console.log("\n🚀 Posting best article to X...");
+      try {
+        await postToX(bestArticle);
+        twitterSuccess = true;
+      } catch (error) {
+        console.error("Twitter posting failed:", error.message);
+      }
+    }
+
+    // Now send response with all results
     res.status(200).json({
       message: "News updated successfully with AI-generated content!",
       stats: {
         entertainment: entertainmentCount,
         sports: sportsCount,
-        totalFetched: { entertainment: entertainmentNews.length, sports: sportsNews.length }
+        totalFetched: { 
+          entertainment: entertainmentNews.length, 
+          sports: sportsNews.length 
+        },
+        twitterPosted: twitterSuccess
       }
     });
-
-    // After saving entertainment and sports
-    const bestArticle = pickBestArticle([...entertainmentNews, ...sportsNews]);
-
-    if (bestArticle) {
-      console.log("\n🚀 Posting best article to X...");
-      await postToX(bestArticle);
-    }
-
 
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error updating news", error: err.message });
   }
 }
-
 // --- TEST RUN ---
 async function runTest() {
   console.log("🚀 Starting News Update Test (Dual API + AI)\n");
