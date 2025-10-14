@@ -16,195 +16,159 @@ function generateSlug(text) {
   return text
     .toLowerCase()
     .trim()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9 -]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9 -]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
-// --- CREATE LINK ---
+// --- CREATE POST URL ---
 function createPostUrl(post) {
   const date = new Date(post.publishedAt || new Date());
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
   const slug = generateSlug(post.title);
-  return `https://www.trendzlib.com.ng/${year}/${month}/${day}/${slug}`;
+  return encodeURI(`https://www.trendzlib.com.ng/${year}/${month}/${day}/${slug}`);
+}
+
+// --- SANITIZE TEXT ---
+function sanitizeText(text) {
+  return text
+    .replace(/[“”‘’]/g, "'")
+    .replace(/\u200B/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// --- SHORTEN URL IF BLOCKED ---
+async function shortenUrlIfBlocked(url) {
+  try {
+    // Test if domain is allowed
+    await twitterClient.v2.tweet({
+      text: `Testing ${url}`,
+    });
+    console.log("✅ Domain allowed by Twitter.");
+    return url;
+  } catch (err) {
+    const isInvalid = err?.data?.errors?.some((e) =>
+      e.message?.includes("invalid URL")
+    );
+
+    if (isInvalid) {
+      console.log("⚠️ Domain blocked — shortening via TinyURL...");
+      try {
+        const response = await axios.get(
+          `https://tinyurl.com/api-create.php?url=${encodeURIComponent(url)}`
+        );
+        console.log(`🔗 Shortened URL: ${response.data}`);
+        return response.data;
+      } catch (shortErr) {
+        console.error("❌ TinyURL shortening failed:", shortErr.message);
+        return url;
+      }
+    } else {
+      console.error("❌ Unknown error testing URL:", err.message);
+      return url;
+    }
+  }
 }
 
 // --- PICK BEST ARTICLE ---
 function pickBestArticle(articles) {
   return articles
-    .filter(a => a.title && (a.content || a.description) && a.urlToImage)
+    .filter((a) => a.title && (a.content || a.description) && a.urlToImage)
     .sort((a, b) => {
-      const aLength = (a.content || a.description || '').length;
-      const bLength = (b.content || b.description || '').length;
+      const aLength = (a.content || a.description || "").length;
+      const bLength = (b.content || b.description || "").length;
       return bLength - aLength;
     })[0];
 }
 
-// --- DOWNLOAD IMAGE AS BUFFER ---
+// --- DOWNLOAD IMAGE ---
 async function downloadImageBuffer(url) {
-  try {
-    console.log(`   Image URL: ${url}`);
-    
-    const response = await axios.get(url, { 
-      responseType: 'arraybuffer',
-      timeout: 20000,
-      maxContentLength: 5 * 1024 * 1024, // 5MB max
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    const buffer = Buffer.from(response.data, 'binary');
-    console.log(`   Image size: ${(buffer.length / 1024).toFixed(2)} KB`);
-    
-    return buffer;
-  } catch (error) {
-    console.error(`   ❌ Image download failed: ${error.message}`);
-    if (error.response) {
-      console.error(`   Status: ${error.response.status}`);
-    }
-    throw new Error(`Image download failed: ${error.message}`);
-  }
+  console.log(`   Image URL: ${url}`);
+  const response = await axios.get(url, {
+    responseType: "arraybuffer",
+    timeout: 20000,
+    maxContentLength: 5 * 1024 * 1024,
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    },
+  });
+  const buffer = Buffer.from(response.data, "binary");
+  console.log(`   Image size: ${(buffer.length / 1024).toFixed(2)} KB`);
+  return buffer;
 }
 
-// --- CREATE TWEET TEXT WITH LENGTH VALIDATION ---
+// --- CREATE TWEET TEXT ---
 function createTweetText(article, postUrl) {
-  const title = article.title;
-  
-  // Get snippet from content or description
-  let snippet = '';
-  const source = article.content || article.description || '';
-  
-  if (source) {
-    // Clean up the content
-    const cleanContent = source.replace(/\s+/g, ' ').trim();
-    
-    // Split into words
-    const words = cleanContent.split(' ');
-    
-    // Take first 100 words
-    const maxWords = 100;
-    const selectedWords = words.slice(0, maxWords);
-    snippet = selectedWords.join(' ');
-    
-    // Add ellipsis if we truncated
-    if (words.length > maxWords) {
-      snippet += '...';
-    }
-  }
-  
-  // Build final tweet
-  const readMore = `\n\nRead more: ${postUrl}`;
-  const tweetText = snippet 
-    ? `${title}\n\n${snippet}${readMore}`
-    : `${title}${readMore}`;
-  
-  // Final safety check - ensure we're under 280 chars
+  const title = sanitizeText(article.title);
+  const source = sanitizeText(article.content || article.description || "");
+  const words = source.split(" ");
+  const snippet = words.slice(0, 50).join(" ") + (words.length > 50 ? "..." : "");
+  const readMore = `\n\nRead more 🔗 ${postUrl}`;
+  let tweetText = `${title}\n\n${snippet}${readMore}`;
+
+  // Trim to 280 chars max
   if (tweetText.length > 280) {
-    // Calculate how much space we have for the snippet
-    const readMore = `\n\nRead more: ${postUrl}`;
-    const maxSnippetLength = 280 - title.length - readMore.length - 4; // 4 for \n\n
-    
-    if (maxSnippetLength > 50) {
-      // Truncate snippet to fit
-      const truncatedSnippet = snippet.substring(0, maxSnippetLength - 3) + '...';
-      return `${title}\n\n${truncatedSnippet}${readMore}`;
-    } else {
-      // Title is too long, truncate title instead
-      const maxTitleLength = 280 - readMore.length - 10;
-      const truncatedTitle = title.substring(0, maxTitleLength - 3) + '...';
-      return `${truncatedTitle}${readMore}`;
-    }
+    const maxSnippetLength = 280 - title.length - readMore.length - 5;
+    const truncatedSnippet = snippet.substring(0, maxSnippetLength) + "...";
+    tweetText = `${title}\n\n${truncatedSnippet}${readMore}`;
   }
-  
+
   return tweetText;
 }
 
 // --- POST TO X ---
 async function postToX(article) {
   try {
-    console.log(`\n🐦 Preparing to post: "${article.title.slice(0, 50)}..."`);
-    
-    // Validate article data
-    if (!article.title) {
-      throw new Error("Article missing title");
+    console.log(`\n🐦 Preparing to post: "${article.title.slice(0, 60)}..."`);
+
+    if (!article.title || !article.urlToImage) {
+      throw new Error("❌ Missing title or image in article");
     }
-    if (!article.urlToImage) {
-      throw new Error("Article missing image");
-    }
-    
-    // Create post URL and tweet text
-    const postUrl = createPostUrl(article);
-    
-    // Debug: Show content info
-    const contentLength = (article.content || article.description || '').length;
-    console.log(`   Content available: ${contentLength} characters`);
-    
+
+    // Create and verify post URL
+    let postUrl = createPostUrl(article);
+    postUrl = await shortenUrlIfBlocked(postUrl);
+
+    // Create tweet text
     const tweetText = createTweetText(article, postUrl);
-    
-    console.log(`   Tweet length: ${tweetText.length} characters`);
-    console.log(`   Tweet preview: ${tweetText.substring(0, 150)}...`);
-    
-    // Download and upload image
+    console.log(`   Tweet length: ${tweetText.length}`);
+    console.log(`   Tweet preview: ${tweetText.slice(0, 150)}...`);
+
+    // Download image
     console.log(`   Downloading image...`);
     const imageBuffer = await downloadImageBuffer(article.urlToImage);
-    
-    console.log(`   Uploading image to Twitter...`);
-    let mediaId;
-    try {
-      mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { 
-        mimeType: "image/jpeg"
-      });
-      console.log(`   Media ID: ${mediaId}`);
-    } catch (uploadError) {
-      console.error(`   ❌ Image upload failed:`, uploadError);
-      throw uploadError;
-    }
-    
-    // Post tweet with image
+
+    // Upload image
+    console.log(`   Uploading image...`);
+    const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, {
+      mimeType: "image/jpeg",
+    });
+    console.log(`   Media ID: ${mediaId}`);
+
+    // Post tweet
     console.log(`   Posting tweet...`);
-    let tweet;
-    try {
-      tweet = await twitterClient.v2.tweet({
-        text: tweetText,
-        media: { media_ids: [mediaId] },
-      });
-    } catch (tweetError) {
-      console.error(`   ❌ Tweet post failed:`, tweetError);
-      
-      // Log detailed error info
-      if (tweetError.data) {
-        console.error(`   Error details:`, JSON.stringify(tweetError.data, null, 2));
-      }
-      if (tweetError.errors) {
-        console.error(`   API errors:`, tweetError.errors);
-      }
-      
-      throw tweetError;
-    }
+    const tweet = await twitterClient.v2.tweet({
+      text: tweetText,
+      media: { media_ids: [mediaId] },
+    });
 
     console.log(`✅ Posted to X successfully!`);
     console.log(`   Tweet ID: ${tweet.data.id}`);
-    console.log(`   View at: https://twitter.com/i/web/status/${tweet.data.id}`);
-    
+    console.log(`   View: https://twitter.com/i/web/status/${tweet.data.id}`);
     return tweet.data;
 
   } catch (error) {
     console.error("\n❌ Error posting to X:");
-    console.error(`   Error: ${error.message}`);
-    
-    // More detailed error info
-    if (error.code) console.error(`   Code: ${error.code}`);
-    if (error.data) console.error(`   Data:`, JSON.stringify(error.data, null, 2));
-    if (error.errors) console.error(`   Errors:`, error.errors);
-    if (error.stack) console.error(`   Stack trace:`, error.stack);
-    
-    throw error; // Re-throw so caller knows it failed
+    console.error(`   Message: ${error.message}`);
+    if (error.data) console.error(`   Data: ${JSON.stringify(error.data, null, 2)}`);
+    if (error.errors) console.error(`   Errors: ${JSON.stringify(error.errors, null, 2)}`);
+    throw error;
   }
 }
 
