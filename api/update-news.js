@@ -143,13 +143,13 @@ function filterArticles(articles) {
   );
 }
 
-// --- SAVE ARTICLE TO SANITY ---
+// --- SAVE ARTICLE TO SANITY (Modified to return enhanced article) ---
 async function saveToSanity(article, forcedCategory = "general") {
   try {
     const existing = await client.fetch('*[_type=="news" && title==$title][0]', { title: article.title });
     if (existing) {
       console.log(`   ⏭️ Already exists: ${article.title.slice(0, 60)}...`);
-      return false;
+      return null; // Return null if not saved
     }
 
     const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.urlToImage)}`;
@@ -171,11 +171,17 @@ async function saveToSanity(article, forcedCategory = "general") {
     });
 
     console.log(`   ✅ Saved [${forcedCategory}]: ${article.title.slice(0, 60)}...`);
-    return true;
+    
+    // Return the enhanced article with AI content for Twitter
+    return {
+      ...article,
+      content: detailedContent, // Use AI-generated content
+      category: forcedCategory
+    };
 
   } catch (err) {
     console.error(`   ❌ Error saving: ${err.message}`);
-    return false;
+    return null;
   }
 }
 
@@ -193,31 +199,44 @@ export default async function handler(req, res) {
 
     let entertainmentCount = 0;
     let sportsCount = 0;
+    
+    // Track articles that were actually saved WITH AI content
+    const savedArticles = [];
 
-    // Save up to 10 valid entertainment articles
+    // Save up to 1 valid entertainment article
     for (const article of entertainmentNews) {
-      if (await saveToSanity(article, "entertainment")) entertainmentCount++;
-      if (entertainmentCount >= 1) break;
+      const savedArticle = await saveToSanity(article, "entertainment");
+      if (savedArticle) {
+        entertainmentCount++;
+        savedArticles.push(savedArticle); // Push enhanced article with AI content
+        if (entertainmentCount >= 1) break;
+      }
     }
 
-    // Save up to 5 valid sports articles
+    // Save up to 1 valid sports article
     for (const article of sportsNews) {
-      if (await saveToSanity(article, "sport")) sportsCount++;
-      if (sportsCount >= 1) break;
+      const savedArticle = await saveToSanity(article, "sport");
+      if (savedArticle) {
+        sportsCount++;
+        savedArticles.push(savedArticle); // Push enhanced article with AI content
+        if (sportsCount >= 1) break;
+      }
     }
 
-    // 🐦 POST TO TWITTER BEFORE SENDING RESPONSE
+    // 🐦 POST TO TWITTER - Use article with AI-generated content
     let twitterSuccess = false;
-    const bestArticle = pickBestArticle([...entertainmentNews, ...sportsNews]);
+    const bestArticle = pickBestArticle(savedArticles);
 
     if (bestArticle) {
-      console.log("\n🚀 Posting best article to X...");
+      console.log("\n🚀 Posting best article to X (with AI content)...");
       try {
-        await postToX(bestArticle);
+        await postToX(bestArticle); // Now uses Gemini-generated content
         twitterSuccess = true;
       } catch (error) {
         console.error("Twitter posting failed:", error.message);
       }
+    } else {
+      console.log("\n⚠️ No articles were saved, skipping Twitter post");
     }
 
     // Now send response with all results
@@ -239,6 +258,7 @@ export default async function handler(req, res) {
     res.status(500).json({ message: "Error updating news", error: err.message });
   }
 }
+
 // --- TEST RUN ---
 async function runTest() {
   console.log("🚀 Starting News Update Test (Dual API + AI)\n");
@@ -250,30 +270,59 @@ async function runTest() {
 
     let entertainmentCount = 0;
     let sportsCount = 0;
+    
+    // Track articles that were actually saved WITH AI content
+    const savedArticles = [];
 
     console.log("\n📺 Processing Entertainment News:");
     for (const article of entertainmentNews) {
-      if (await saveToSanity(article, "entertainment")) entertainmentCount++;
-      if (entertainmentCount >= 1) break;
+      const savedArticle = await saveToSanity(article, "entertainment");
+      if (savedArticle) {
+        entertainmentCount++;
+        savedArticles.push(savedArticle); // Push enhanced article with AI content
+        if (entertainmentCount >= 1) break;
+      }
     }
 
     console.log("\n⚽ Processing Sports News:");
     for (const article of sportsNews) {
-      if (await saveToSanity(article, "sport")) sportsCount++;
-      if (sportsCount >= 1) break;
+      const savedArticle = await saveToSanity(article, "sport");
+      if (savedArticle) {
+        sportsCount++;
+        savedArticles.push(savedArticle); // Push enhanced article with AI content
+        if (sportsCount >= 1) break;
+      }
+    }
+
+    // 🐦 POST TO TWITTER - Use article with AI-generated content
+    let twitterSuccess = false;
+    const bestArticle = pickBestArticle(savedArticles);
+
+    if (bestArticle) {
+      console.log("\n🚀 Posting best article to X (with AI content)...");
+      console.log(`   Article has AI content: ${bestArticle.content ? 'YES ✅' : 'NO ❌'}`);
+      try {
+        await postToX(bestArticle); // Now uses Gemini-generated content
+        twitterSuccess = true;
+        console.log("✅ Twitter post successful!");
+      } catch (error) {
+        console.error("❌ Twitter posting failed:", error.message);
+      }
+    } else {
+      console.log("\n⚠️ No articles were saved, skipping Twitter post");
     }
 
     console.log("\n" + "=".repeat(60));
     console.log(`\n📊 RESULTS:`);
     console.log(`   Entertainment: ${entertainmentCount} saved`);
     console.log(`   Sports: ${sportsCount} saved`);
-    console.log(`   Total: ${entertainmentCount + sportsCount} articles\n`);
+    console.log(`   Total: ${entertainmentCount + sportsCount} articles`);
+    console.log(`   Twitter Posted: ${twitterSuccess ? 'YES ✅' : 'NO ❌'}\n`);
     console.log("✅ Test completed successfully!\n");
 
   } catch (err) {
     console.error("\n❌ TEST FAILED:", err.message);
   }
 }
-runTest()
-// Run the test
 
+runTest();
