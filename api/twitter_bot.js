@@ -31,7 +31,7 @@ function createPostUrl(post) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   const slug = generateSlug(post.title);
-  return `https://www.trendzlib.com/${year}/${month}/${day}/${slug}`;
+  return `https://www.trendzlib.com.ng/${year}/${month}/${day}/${slug}`;
 }
 
 // --- PICK BEST ARTICLE ---
@@ -81,48 +81,21 @@ function createTweetText(article, postUrl) {
   const source = article.content || article.description || '';
   
   if (source) {
-    // Clean up the content first (remove extra whitespace, newlines)
+    // Clean up the content
     const cleanContent = source.replace(/\s+/g, ' ').trim();
     
-    // Split into proper sentences (accounting for abbreviations)
-    const sentences = cleanContent
-      .split(/(?<=[.!?])\s+(?=[A-Z])/)
-      .filter(s => s.trim().length > 10); // Filter out very short fragments
+    // Split into words
+    const words = cleanContent.split(' ');
     
-    // Calculate available space for snippet
-    const readMore = `\n\nRead more: ${postUrl}`;
-    const baseLength = title.length + readMore.length + 4; // 4 for \n\n spacing
-    const availableLength = 280 - baseLength;
+    // Take first 100 words
+    const maxWords = 100;
+    const selectedWords = words.slice(0, maxWords);
+    snippet = selectedWords.join(' ');
     
-    // Aim to use 85% of available space for maximum content
-    const targetLength = Math.floor(availableLength * 0.85);
-    
-    // Build snippet sentence by sentence
-    let currentSnippet = '';
-    
-    for (let i = 0; i < sentences.length && i < 8; i++) { // Cap at 8 sentences max
-      const sentence = sentences[i].trim();
-      const testSnippet = currentSnippet 
-        ? `${currentSnippet} ${sentence}` 
-        : sentence;
-      
-      if (testSnippet.length <= targetLength) {
-        currentSnippet = testSnippet;
-      } else {
-        // If we haven't added any sentences yet, truncate this one
-        if (!currentSnippet && targetLength > 100) {
-          currentSnippet = sentence.substring(0, targetLength - 3) + '...';
-        }
-        break;
-      }
+    // Add ellipsis if we truncated
+    if (words.length > maxWords) {
+      snippet += '...';
     }
-    
-    // Fallback: if snippet is too short, take first chunk of content
-    if (currentSnippet.length < 100 && targetLength > 100) {
-      currentSnippet = cleanContent.substring(0, targetLength - 3) + '...';
-    }
-    
-    snippet = currentSnippet;
   }
   
   // Build final tweet
@@ -133,13 +106,16 @@ function createTweetText(article, postUrl) {
   
   // Final safety check - ensure we're under 280 chars
   if (tweetText.length > 280) {
-    const maxSnippetLength = 280 - title.length - readMore.length - 4;
+    // Calculate how much space we have for the snippet
+    const readMore = `\n\nRead more: ${postUrl}`;
+    const maxSnippetLength = 280 - title.length - readMore.length - 4; // 4 for \n\n
     
-    if (maxSnippetLength > 80) {
+    if (maxSnippetLength > 50) {
+      // Truncate snippet to fit
       const truncatedSnippet = snippet.substring(0, maxSnippetLength - 3) + '...';
       return `${title}\n\n${truncatedSnippet}${readMore}`;
     } else {
-      // Title is too long, truncate it
+      // Title is too long, truncate title instead
       const maxTitleLength = 280 - readMore.length - 10;
       const truncatedTitle = title.substring(0, maxTitleLength - 3) + '...';
       return `${truncatedTitle}${readMore}`;
