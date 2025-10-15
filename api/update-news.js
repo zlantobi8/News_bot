@@ -2,7 +2,7 @@ import axios from "axios";
 import { createClient } from "@sanity/client";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
-import { pickBestArticle, postToX } from "./twitter_bot.js";
+import { pickBestArticle, postToX, testConnection } from "./twitter_bot.js";
 dotenv.config();
 
 // --- CONFIGURE SANITY ---
@@ -29,7 +29,8 @@ function getCategoryClass(category) {
 // --- GENERATE DETAILED CONTENT ---
 async function generateDetailedContent(article, category) {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+    console.log(`   🤖 Generating AI content...`);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
     const prompt = `You are a professional news writer. Based on the following news headline and brief description, write a detailed, engaging news article of 400-600 words.
 
@@ -49,11 +50,16 @@ Write a comprehensive article that:
 Article:`;
 
     const result = await model.generateContent(prompt);
-    return result.response.text().trim();
+    const content = result.response.text().trim();
+    console.log(`   ✅ AI content generated: ${content.length} characters`);
+    return content;
 
   } catch (error) {
-    console.error(`AI generation failed: ${error.message}`);
-    return article.content || article.description || `${article.title}\n\nRead more at the source.`;
+    console.error(`   ⚠️ AI generation failed: ${error.message}`);
+    // Fallback to original content
+    const fallback = article.content || article.description || `${article.title}\n\nRead more at the source.`;
+    console.log(`   📝 Using fallback content: ${fallback.length} characters`);
+    return fallback;
   }
 }
 
@@ -138,26 +144,42 @@ async function fetchSports() {
 
 // --- FILTER ARTICLES ---
 function filterArticles(articles) {
-  return articles.filter(article =>
-    article.title && article.title.length > 5 && article.urlToImage
-  );
+  const filtered = articles.filter(article => {
+    const hasTitle = article.title && article.title.length > 5;
+    const hasImage = article.urlToImage && article.urlToImage.startsWith('http');
+    const hasContent = article.content || article.description;
+    
+    return hasTitle && hasImage && hasContent;
+  });
+  
+  console.log(`   Filtered: ${filtered.length}/${articles.length} articles valid`);
+  return filtered;
 }
 
-// --- SAVE ARTICLE TO SANITY (Modified to return enhanced article) ---
+// --- SAVE ARTICLE TO SANITY ---
 async function saveToSanity(article, forcedCategory = "general") {
   try {
-    const existing = await client.fetch('*[_type=="news" && title==$title][0]', { title: article.title });
+    // Check if article already exists
+    const existing = await client.fetch(
+      '*[_type=="news" && title==$title][0]', 
+      { title: article.title }
+    );
+    
     if (existing) {
-      console.log(`   ⏭️ Already exists: ${article.title.slice(0, 60)}...`);
+      console.log(`   ⏭️  Already exists: ${article.title.slice(0, 60)}...`);
       return null;
     }
 
+    // Generate Cloudinary URL for image optimization
     const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.urlToImage)}`;
 
-    console.log(`   🤖 Generating AI content: "${article.title.slice(0, 50)}..."`);
+    console.log(`   💾 Saving: "${article.title.slice(0, 50)}..."`);
+    
+    // Generate AI content
     const detailedContent = await generateDetailedContent(article, forcedCategory);
 
-    await client.create({
+    // Create document in Sanity
+    const result = await client.create({
       _type: "news",
       title: article.title,
       content: detailedContent,
@@ -172,14 +194,16 @@ async function saveToSanity(article, forcedCategory = "general") {
 
     console.log(`   ✅ Saved [${forcedCategory}]: ${article.title.slice(0, 60)}...`);
     
+    // Return enhanced article with AI content for Twitter posting
     return {
       ...article,
       content: detailedContent,
-      category: forcedCategory
+      category: forcedCategory,
+      _id: result._id
     };
 
   } catch (err) {
-    console.error(`   ❌ Error saving: ${err.message}`);
+    console.error(`   ❌ Error saving article: ${err.message}`);
     return null;
   }
 }
@@ -188,12 +212,23 @@ async function saveToSanity(article, forcedCategory = "general") {
 export default async function handler(req, res) {
   // Security check for cron job
   if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
-    return res.status(401).end("Unauthorized");
+    console.warn("⚠️ Unauthorized access attempt");
+    return res.status(401).json({ error: "Unauthorized" });
   }
 
-  try {
-    console.log("🚀 Starting automated news update...");
+  const startTime = Date.now();
+  console.log("🚀 Starting automated news update...");
+  console.log(`   Time: ${new Date().toISOString()}`);
 
+  try {
+    // Test Twitter connection first
+    console.log("\n🔍 Testing Twitter connection...");
+    const twitterConnected = await testConnection();
+    if (!twitterConnected) {
+      console.warn("⚠️ Twitter connection failed, will attempt posting anyway...");
+    }
+
+    // Fetch news from APIs
     const entertainmentNews = filterArticles(await fetchEntertainment());
     const sportsNews = filterArticles(await fetchSports());
 
@@ -202,6 +237,7 @@ export default async function handler(req, res) {
     const savedArticles = [];
 
     // Save entertainment articles
+    console.log("\n📺 Processing Entertainment News:");
     for (const article of entertainmentNews) {
       const savedArticle = await saveToSanity(article, "entertainment");
       if (savedArticle) {
@@ -212,6 +248,7 @@ export default async function handler(req, res) {
     }
 
     // Save sports articles
+    console.log("\n⚽ Processing Sports News:");
     for (const article of sportsNews) {
       const savedArticle = await saveToSanity(article, "sport");
       if (savedArticle) {
@@ -221,51 +258,84 @@ export default async function handler(req, res) {
       }
     }
 
-    // Post to Twitter
-    let twitterSuccess = false;
+    // Post to Twitter/X
+    let twitterResult = null;
     const bestArticle = pickBestArticle(savedArticles);
 
     if (bestArticle) {
-      console.log("\n🚀 Posting best article to X...");
-      try {
-        await postToX(bestArticle);
-        twitterSuccess = true;
+      console.log("\n🐦 Posting best article to X...");
+      console.log(`   Selected: "${bestArticle.title.slice(0, 60)}..."`);
+      console.log(`   Content length: ${(bestArticle.content || '').length} chars`);
+      
+      const result = await postToX(bestArticle);
+      twitterResult = result;
+      
+      if (result.success) {
         console.log("✅ Twitter post successful!");
-      } catch (error) {
-        console.error("❌ Twitter posting failed:", error.message);
+      } else {
+        console.error("❌ Twitter posting failed:", result.error);
       }
     } else {
-      console.log("\n⚠️ No new articles to post");
+      console.log("\n⚠️ No suitable articles to post to Twitter");
     }
 
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`\n✅ News update completed in ${duration}s`);
+
+    // Return response
     res.status(200).json({
+      success: true,
       message: "News updated successfully!",
       stats: {
-        entertainment: entertainmentCount,
-        sports: sportsCount,
-        totalFetched: { 
-          entertainment: entertainmentNews.length, 
-          sports: sportsNews.length 
+        entertainment: {
+          saved: entertainmentCount,
+          fetched: entertainmentNews.length
         },
-        twitterPosted: twitterSuccess
-      }
+        sports: {
+          saved: sportsCount,
+          fetched: sportsNews.length
+        },
+        total: {
+          saved: entertainmentCount + sportsCount,
+          fetched: entertainmentNews.length + sportsNews.length
+        }
+      },
+      twitter: twitterResult ? {
+        posted: twitterResult.success,
+        tweetId: twitterResult.tweetId,
+        url: twitterResult.tweetUrl,
+        error: twitterResult.error
+      } : {
+        posted: false,
+        reason: "No suitable articles"
+      },
+      duration: `${duration}s`,
+      timestamp: new Date().toISOString()
     });
 
   } catch (err) {
+    console.error("\n❌ Fatal error during news update:");
     console.error(err);
-    res.status(500).json({ message: "Error updating news", error: err.message });
+    
+    res.status(500).json({ 
+      success: false,
+      message: "Error updating news", 
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 }
 
-// --- LOCAL TESTING ONLY ---
-// Uncomment this line to test locally, comment out before deploying
-// runTest();
-
+// --- LOCAL TESTING ---
 async function runTest() {
-  console.log("🚀 Starting News Update Test\n");
-  console.log("=".repeat(60));
+  console.log("🚀 Starting News Update Test");
+  console.log("=".repeat(70));
 
   try {
+    // Test Twitter connection
+    console.log("\n🔍 Testing Twitter connection...");
+    await testConnection();
+
     const entertainmentNews = filterArticles(await fetchEntertainment());
     const sportsNews = filterArticles(await fetchSports());
 
@@ -294,33 +364,38 @@ async function runTest() {
     }
 
     // Post to Twitter
-    let twitterSuccess = false;
     const bestArticle = pickBestArticle(savedArticles);
 
     if (bestArticle) {
-      console.log("\n🚀 Posting best article to X (with AI content)...");
-      console.log(`   Article has AI content: ${bestArticle.content ? 'YES ✅' : 'NO ❌'}`);
-      try {
-        await postToX(bestArticle);
-        twitterSuccess = true;
-        console.log("✅ Twitter post successful!");
-      } catch (error) {
-        console.error("❌ Twitter posting failed:", error.message);
+      console.log("\n🐦 Posting best article to X...");
+      console.log(`   Selected: "${bestArticle.title.slice(0, 60)}..."`);
+      console.log(`   Has AI content: ${bestArticle.content ? 'YES ✅' : 'NO ❌'}`);
+      console.log(`   Content length: ${(bestArticle.content || '').length} chars`);
+      
+      const result = await postToX(bestArticle);
+      
+      if (result.success) {
+        console.log("\n✅ Twitter post successful!");
+        console.log(`   Tweet URL: ${result.tweetUrl}`);
+      } else {
+        console.error("\n❌ Twitter posting failed:", result.error);
       }
     } else {
       console.log("\n⚠️ No articles were saved");
     }
 
-    console.log("\n" + "=".repeat(60));
-    console.log(`\n📊 RESULTS:`);
+    console.log("\n" + "=".repeat(70));
+    console.log(`\n📊 FINAL RESULTS:`);
     console.log(`   Entertainment: ${entertainmentCount} saved`);
     console.log(`   Sports: ${sportsCount} saved`);
     console.log(`   Total: ${entertainmentCount + sportsCount} articles`);
-    console.log(`   Twitter Posted: ${twitterSuccess ? 'YES ✅' : 'NO ❌'}\n`);
-    console.log("✅ Test completed successfully!\n");
+    console.log(`\n✅ Test completed successfully!\n`);
 
   } catch (err) {
     console.error("\n❌ TEST FAILED:", err.message);
+    console.error(err.stack);
   }
 }
+
+// Uncomment to run test
 runTest();
