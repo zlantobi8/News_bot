@@ -64,7 +64,7 @@ Ensure the article:
 }
 
 // --- FETCH FROM NEWSAPI.ORG ---
-async function fetchFromNewsAPI(category, country = "us", retries = 3) {
+async function fetchFromNewsAPI(category, country = "ng", retries = 3) {
   const categoryMap = { sport: "sports", entertainment: "entertainment" };
   const mappedCategory = categoryMap[category] || category;
 
@@ -140,7 +140,7 @@ async function fetchEntertainment() {
 
 async function fetchSports() {
   console.log("\n📰 Fetching Sports News...");
-  return await fetchFromNewsAPI("sport", "us");
+  return await fetchFromNewsAPI("sport", "ng");
 }
 
 // --- FILTER ARTICLES ---
