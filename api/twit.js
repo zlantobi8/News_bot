@@ -152,7 +152,7 @@ console.log("1. Full diagnostics (includes test tweet attempt)");
 console.log("2. Quick check (no posting attempt)\n");
 
 // Run full diagnostics by default
-checkTwitterPermissions();
+
 
 // Uncomment for quick check instead:
 // quickPermissionCheck();
