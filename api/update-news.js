@@ -138,10 +138,55 @@ async function fetchEntertainment() {
   return unique;
 }
 
+// ...existing code...
 async function fetchSports() {
-  console.log("\n📰 Fetching Sports News...");
-  return await fetchFromNewsAPI("sport", "ng");
+  console.log("\n📰 Fetching Football (only) News (worldwide)...");
+
+  // NewsAPI - use "everything" with q for worldwide football coverage
+  try {
+    const q = encodeURIComponent('football OR soccer');
+    const newsApiUrl = `https://newsapi.org/v2/everything?apiKey=${process.env.NEWSAPI_KEY}&q=${q}&language=en&pageSize=50&sortBy=publishedAt`;
+    const { data: apiData } = await axios.get(newsApiUrl, { timeout: 10000 });
+    const apiArticles = (apiData.articles || []).map((a) => ({
+      title: a.title,
+      description: a.description,
+      content: a.content,
+      urlToImage: a.urlToImage,
+      url: a.url,
+      source: { name: a.source?.name },
+      author: a.author,
+      publishedAt: a.publishedAt,
+    }));
+    console.log(`✓ NewsAPI: Fetched ${apiArticles.length} football articles (worldwide)`);
+
+    // NewsData - use q param for football
+    const newsDataQ = encodeURIComponent("football OR soccer");
+    const newsDataUrl = `https://newsdata.io/api/1/news?apikey=${process.env.NEWSDATA_KEY}&q=${newsDataQ}&language=en&page=1`;
+    const { data: ndData } = await axios.get(newsDataUrl, { timeout: 10000 });
+    const ndArticles = (ndData.results || []).map((a) => ({
+      title: a.title,
+      description: a.description,
+      content: a.content,
+      urlToImage: a.image_url,
+      url: a.link,
+      source: { name: a.source_name || a.source_id },
+      author: a.creator?.[0],
+      publishedAt: a.pubDate,
+    }));
+    console.log(`✓ NewsData: Fetched ${ndArticles.length} football articles (worldwide)`);
+
+    const combined = [...ndArticles, ...apiArticles];
+    const unique = combined.filter(
+      (a, i, self) => i === self.findIndex((b) => b.title === a.title)
+    );
+    console.log(`   Combined: ${unique.length} unique football articles`);
+    return unique;
+  } catch (err) {
+    console.error("❌ fetchSports (football) failed:", err.message);
+    return [];
+  }
 }
+// ...existing code...
 
 // --- FILTER ARTICLES ---
 function filterArticles(articles) {
