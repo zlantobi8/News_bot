@@ -1,8 +1,7 @@
 import dotenv from "dotenv";
-dotenv.config();
 import axios from "axios";
 import { TwitterApi } from "twitter-api-v2";
-
+dotenv.config();
 // --- CONFIGURE TWITTER CLIENT ---
 const twitterClient = new TwitterApi({
   appKey: process.env.TWITTER_APP_KEY,
@@ -14,7 +13,7 @@ const twitterClient = new TwitterApi({
 // Use read-write client
 const rwClient = twitterClient.readWrite;
 
-// --- SLUG GENERATOR ---
+// --- SLUG GENERATOR --
 function generateSlug(text) {
   return text
     .toLowerCase()
