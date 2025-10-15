@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import axios from "axios";
 import { TwitterApi } from "twitter-api-v2";
 dotenv.config();
+
 // --- CONFIGURE TWITTER CLIENT ---
 const twitterClient = new TwitterApi({
   appKey: process.env.TWITTER_APP_KEY,
@@ -10,10 +11,9 @@ const twitterClient = new TwitterApi({
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
-// Use read-write client
 const rwClient = twitterClient.readWrite;
 
-// --- SLUG GENERATOR --
+// --- SLUG GENERATOR ---
 function generateSlug(text) {
   return text
     .toLowerCase()
@@ -36,7 +36,6 @@ function createPostUrl(post) {
   return `https://www.trendzlib.com.ng/${year}/${month}/${day}/${slug}`;
 }
 
-
 async function shortenUrl(longUrl) {
   const res = await axios.post(
     "https://api.tinyurl.com/create",
@@ -49,118 +48,262 @@ async function shortenUrl(longUrl) {
   );
   return res.data.data.tiny_url;
 }
-// --- PICK BEST ARTICLE ---
-function pickBestArticle(articles) {
-  if (!articles || articles.length === 0) return null;
-  
-  return articles
-    .filter(a => a.title && (a.content || a.description) && a.urlToImage)
-    .sort((a, b) => {
-      const aLength = (a.content || a.description || '').length;
-      const bLength = (b.content || b.description || '').length;
-      return bLength - aLength;
-    })[0];
-}
 
-// --- DOWNLOAD IMAGE AS BUFFER ---
-async function downloadImageBuffer(url) {
+// --- COMPREHENSIVE IMAGE VALIDATION ---
+async function validateAndTestImage(url) {
   try {
-    console.log(`   📥 Downloading image from: ${url.substring(0, 80)}...`);
+    console.log(`   🔍 Validating image: ${url.substring(0, 80)}...`);
     
-    const response = await axios.get(url, { 
+    // 1. Check if URL is valid
+    try {
+      new URL(url);
+    } catch (e) {
+      console.error(`   ❌ Invalid URL format`);
+      return { valid: false, reason: 'Invalid URL format' };
+    }
+    
+    // 2. Check URL pattern (avoid common problematic patterns)
+    const problematicPatterns = [
+      /example\.com/i,
+      /placeholder/i,
+      /dummy/i,
+      /test\.jpg/i,
+      /\.(svg)$/i  // SVGs often cause issues
+    ];
+    
+    for (const pattern of problematicPatterns) {
+      if (pattern.test(url)) {
+        console.error(`   ❌ URL matches problematic pattern: ${pattern}`);
+        return { valid: false, reason: `Problematic URL pattern: ${pattern}` };
+      }
+    }
+    
+    // 3. Try HEAD request first (faster, less bandwidth)
+    let contentType, contentLength;
+    try {
+      const headResponse = await axios.head(url, {
+        timeout: 10000,
+        maxRedirects: 5,
+        validateStatus: (status) => status < 400,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        }
+      });
+      
+      contentType = headResponse.headers['content-type'];
+      contentLength = parseInt(headResponse.headers['content-length']) || 0;
+      
+    } catch (headError) {
+      console.warn(`   ⚠️ HEAD request failed, trying GET: ${headError.message}`);
+      // Some servers don't support HEAD, so we'll try GET
+    }
+    
+    // 4. Validate content type
+    if (contentType) {
+      if (!contentType.startsWith('image/')) {
+        console.error(`   ❌ Invalid content type: ${contentType}`);
+        return { valid: false, reason: `Invalid content type: ${contentType}` };
+      }
+      console.log(`   ✓ Content type: ${contentType}`);
+    }
+    
+    // 5. Check content length (if available)
+    if (contentLength > 0) {
+      const sizeMB = (contentLength / (1024 * 1024)).toFixed(2);
+      console.log(`   ✓ Content length: ${sizeMB} MB`);
+      
+      if (contentLength < 1000) {
+        console.error(`   ❌ Image too small (${contentLength} bytes) - likely broken`);
+        return { valid: false, reason: 'Image too small (likely broken)' };
+      }
+      
+      if (contentLength > 5 * 1024 * 1024) {
+        console.error(`   ❌ Image too large (${sizeMB} MB) - exceeds 5MB limit`);
+        return { valid: false, reason: `Image too large: ${sizeMB} MB` };
+      }
+    }
+    
+    // 6. Actually download a portion of the image to verify it's real
+    console.log(`   📥 Downloading image sample to verify...`);
+    const getResponse = await axios.get(url, {
       responseType: 'arraybuffer',
-      timeout: 30000, // Increased timeout
-      maxContentLength: 5 * 1024 * 1024, // 5MB max
-      maxRedirects: 5, // Handle redirects
+      timeout: 15000,
+      maxContentLength: 5 * 1024 * 1024,
+      maxRedirects: 5,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
       }
     });
     
-    const buffer = Buffer.from(response.data, 'binary');
-    const sizeKB = (buffer.length / 1024).toFixed(2);
-    console.log(`   ✅ Image downloaded: ${sizeKB} KB`);
+    const buffer = Buffer.from(getResponse.data, 'binary');
     
-    // Validate buffer is not empty
+    // 7. Verify buffer is not empty
     if (buffer.length === 0) {
-      throw new Error('Downloaded image is empty');
+      console.error(`   ❌ Downloaded image is empty`);
+      return { valid: false, reason: 'Downloaded image is empty' };
     }
     
-    return buffer;
+    // 8. Check magic bytes to verify it's actually an image
+    const magicBytes = buffer.slice(0, 12);
+    const isValidImage = 
+      // JPEG
+      (magicBytes[0] === 0xFF && magicBytes[1] === 0xD8 && magicBytes[2] === 0xFF) ||
+      // PNG
+      (magicBytes[0] === 0x89 && magicBytes[1] === 0x50 && magicBytes[2] === 0x4E && magicBytes[3] === 0x47) ||
+      // GIF
+      (magicBytes[0] === 0x47 && magicBytes[1] === 0x49 && magicBytes[2] === 0x46) ||
+      // WebP
+      (magicBytes[8] === 0x57 && magicBytes[9] === 0x45 && magicBytes[10] === 0x42 && magicBytes[11] === 0x50);
+    
+    if (!isValidImage) {
+      console.error(`   ❌ File is not a valid image (magic bytes check failed)`);
+      return { valid: false, reason: 'Not a valid image file' };
+    }
+    
+    const sizeKB = (buffer.length / 1024).toFixed(2);
+    console.log(`   ✅ Image validated: ${sizeKB} KB, valid image file`);
+    
+    return { 
+      valid: true, 
+      buffer,
+      size: buffer.length,
+      contentType: getResponse.headers['content-type']
+    };
+    
   } catch (error) {
-    console.error(`   ❌ Image download failed: ${error.message}`);
+    console.error(`   ❌ Image validation failed: ${error.message}`);
     if (error.response) {
       console.error(`   HTTP Status: ${error.response.status}`);
-      console.error(`   Response headers:`, error.response.headers);
     }
-    throw new Error(`Image download failed: ${error.message}`);
+    return { 
+      valid: false, 
+      reason: error.message,
+      httpStatus: error.response?.status
+    };
   }
 }
 
-// --- CREATE TWEET TEXT WITH LENGTH VALIDATION ---
+// --- PICK BEST ARTICLE WITH IMAGE VALIDATION ---
+async function pickBestArticle(articles) {
+  if (!articles || articles.length === 0) return null;
+  
+  console.log(`\n📊 Evaluating ${articles.length} articles for best candidate...`);
+  
+  // Filter articles with basic requirements
+  const candidates = articles.filter(a => 
+    a.title && 
+    (a.content || a.description) && 
+    a.urlToImage
+  );
+  
+  console.log(`   ✓ ${candidates.length} articles have title, content, and image URL`);
+  
+  if (candidates.length === 0) return null;
+  
+  // Sort by content length
+  const sorted = candidates.sort((a, b) => {
+    const aLength = (a.content || a.description || '').length;
+    const bLength = (b.content || b.description || '').length;
+    return bLength - aLength;
+  });
+  
+  // Try to find an article with a valid image
+  console.log(`\n🔍 Checking images for top candidates...`);
+  
+  for (let i = 0; i < Math.min(5, sorted.length); i++) {
+    const article = sorted[i];
+    console.log(`\n   Testing article ${i + 1}: "${article.title.substring(0, 50)}..."`);
+    
+    const validation = await validateAndTestImage(article.urlToImage);
+    
+    if (validation.valid) {
+      console.log(`   ✅ Found article with valid image!`);
+      // Cache the validated buffer to avoid re-downloading
+      article._validatedImage = {
+        buffer: validation.buffer,
+        size: validation.size,
+        contentType: validation.contentType
+      };
+      return article;
+    } else {
+      console.log(`   ⚠️ Image invalid: ${validation.reason}`);
+    }
+  }
+  
+  console.log(`\n⚠️ No articles found with valid images in top 5 candidates`);
+  return null;
+}
+
+// --- DOWNLOAD IMAGE (with cached validation) ---
+async function downloadImageBuffer(url, cachedValidation = null) {
+  // If we already validated and downloaded this image, use the cached buffer
+  if (cachedValidation && cachedValidation.buffer) {
+    console.log(`   ♻️ Using cached image buffer (${(cachedValidation.size / 1024).toFixed(2)} KB)`);
+    return cachedValidation.buffer;
+  }
+  
+  // Otherwise validate and download
+  const validation = await validateAndTestImage(url);
+  
+  if (!validation.valid) {
+    throw new Error(`Image validation failed: ${validation.reason}`);
+  }
+  
+  return validation.buffer;
+}
+
+// --- CREATE TWEET TEXT ---
 function createTweetText(article, postUrl) {
   const title = article.title || '';
   const maxTweetLength = 280;
   
-  // Get snippet from content or description
   let snippet = '';
   const source = article.content || article.description || '';
   
   if (source) {
-    // Clean up the content - remove URLs, extra spaces, special chars
     const cleanContent = source
-      .replace(/https?:\/\/[^\s]+/g, '') // Remove URLs
-      .replace(/\[.*?\]/g, '') // Remove [+xxxx chars]
-      .replace(/\s+/g, ' ') // Normalize spaces
+      .replace(/https?:\/\/[^\s]+/g, '')
+      .replace(/\[.*?\]/g, '')
+      .replace(/\s+/g, ' ')
       .trim();
     
-    // Split into sentences or words
     const sentences = cleanContent.split(/[.!?]+/).filter(s => s.trim().length > 0);
     
     if (sentences.length > 0) {
-      // Take first 2-3 sentences
       snippet = sentences.slice(0, 2).join('. ').trim();
       if (!snippet.endsWith('.') && !snippet.endsWith('!') && !snippet.endsWith('?')) {
         snippet += '.';
       }
     } else {
-      // Fallback to word count
       const words = cleanContent.split(' ');
       snippet = words.slice(0, 50).join(' ');
       if (words.length > 50) snippet += '...';
     }
   }
   
-  // Build final tweet with proper structure
   const readMore = `\n\nRead more: ${postUrl}`;
-  
-  // Calculate available space
   const titleSpace = title.length;
   const readMoreSpace = readMore.length;
-  const separatorSpace = 4; // for \n\n between title and snippet
+  const separatorSpace = 4;
   const availableForSnippet = maxTweetLength - titleSpace - readMoreSpace - separatorSpace;
   
-  // Build tweet based on available space
   let tweetText;
   
   if (snippet && availableForSnippet > 50) {
-    // We have room for snippet
     if (snippet.length > availableForSnippet) {
       snippet = snippet.substring(0, availableForSnippet - 3).trim() + '...';
     }
     tweetText = `${title}\n\n${snippet}${readMore}`;
   } else if (availableForSnippet > 0) {
-    // Just title and read more
     tweetText = `${title}${readMore}`;
   } else {
-    // Title is too long, need to truncate it
     const maxTitleLength = maxTweetLength - readMore.length - 3;
     const truncatedTitle = title.substring(0, maxTitleLength).trim() + '...';
     tweetText = `${truncatedTitle}${readMore}`;
   }
   
-  // Final safety check
   if (tweetText.length > maxTweetLength) {
     console.warn(`   ⚠️ Tweet still too long (${tweetText.length} chars), truncating...`);
     const maxLength = maxTweetLength - readMore.length - 3;
@@ -170,40 +313,12 @@ function createTweetText(article, postUrl) {
   return tweetText;
 }
 
-// --- VALIDATE IMAGE URL ---
-async function validateImageUrl(url) {
-  try {
-    // Check if URL is valid
-    new URL(url);
-    
-    // Try HEAD request first to check if image exists
-    const headResponse = await axios.head(url, {
-      timeout: 10000,
-      maxRedirects: 5,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    const contentType = headResponse.headers['content-type'];
-    if (!contentType || !contentType.startsWith('image/')) {
-      throw new Error(`Invalid content type: ${contentType}`);
-    }
-    
-    return true;
-  } catch (error) {
-    console.error(`   ⚠️ Image validation failed: ${error.message}`);
-    return false;
-  }
-}
-
 // --- POST TO X ---
 async function postToX(article) {
   try {
     console.log(`\n🐦 Preparing to post to X (Twitter)...`);
     console.log(`   Title: "${article.title.slice(0, 60)}..."`);
     
-    // Validate article data
     if (!article.title || article.title.trim().length === 0) {
       throw new Error("Article missing title");
     }
@@ -211,14 +326,6 @@ async function postToX(article) {
       throw new Error("Article missing image URL");
     }
     
-    // Validate image URL
-    console.log(`   🔍 Validating image URL...`);
-    const isValidImage = await validateImageUrl(article.urlToImage);
-    if (!isValidImage) {
-      throw new Error("Image URL is invalid or inaccessible");
-    }
-    
-    // Create post URL and tweet text
     const postUrl = createPostUrl(article);
     const safeUrl = await shortenUrl(postUrl);
     const contentLength = (article.content || article.description || '').length;
@@ -228,47 +335,41 @@ async function postToX(article) {
     console.log(`   📏 Tweet length: ${tweetText.length}/280 characters`);
     console.log(`   📄 Tweet preview:\n      "${tweetText.substring(0, 120)}..."`);
     
-    // Validate tweet length
     if (tweetText.length > 280) {
       throw new Error(`Tweet too long: ${tweetText.length} characters`);
     }
     
-    // Download image
-    console.log(`\n   📥 Downloading image...`);
-    const imageBuffer = await downloadImageBuffer(article.urlToImage);
+    // Use cached validated image if available, otherwise download and validate
+    console.log(`\n   📥 Getting image...`);
+    const imageBuffer = await downloadImageBuffer(
+      article.urlToImage, 
+      article._validatedImage
+    );
     
-    // Upload image to Twitter (v1.1 endpoint)
     console.log(`   📤 Uploading image to Twitter...`);
     let mediaId;
     try {
-      // Use v1 client for media upload
       mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { 
         mimeType: "image/jpeg",
         target: 'tweet'
       });
-      console.log(`   ✅ Media uploaded successfully`);
-      console.log(`   🆔 Media ID: ${mediaId}`);
+      console.log(`   ✅ Media uploaded successfully (ID: ${mediaId})`);
     } catch (uploadError) {
-      console.error(`   ❌ Image upload failed:`);
-      console.error(`      Error: ${uploadError.message}`);
+      console.error(`   ❌ Image upload failed: ${uploadError.message}`);
       if (uploadError.data) {
         console.error(`      Details:`, JSON.stringify(uploadError.data, null, 2));
       }
       throw uploadError;
     }
     
-    // Small delay to ensure media is processed
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // Post tweet with image (v2 endpoint)
     console.log(`\n   🚀 Posting tweet...`);
     let tweet;
     try {
       tweet = await rwClient.v2.tweet({
         text: tweetText,
-        media: { 
-          media_ids: [mediaId] 
-        },
+        media: { media_ids: [mediaId] },
       });
       
       console.log(`\n✅ Successfully posted to X!`);
@@ -276,23 +377,9 @@ async function postToX(article) {
       console.log(`   🔗 View at: https://twitter.com/i/web/status/${tweet.data.id}`);
       
     } catch (tweetError) {
-      console.error(`\n❌ Tweet posting failed:`);
-      console.error(`   Error message: ${tweetError.message}`);
-      
-      // Log detailed error info
-      if (tweetError.code) {
-        console.error(`   Error code: ${tweetError.code}`);
-      }
-      if (tweetError.data) {
-        console.error(`   Error data:`, JSON.stringify(tweetError.data, null, 2));
-      }
-      if (tweetError.errors) {
-        console.error(`   API errors:`, JSON.stringify(tweetError.errors, null, 2));
-      }
-      if (tweetError.rateLimit) {
-        console.error(`   Rate limit info:`, tweetError.rateLimit);
-      }
-      
+      console.error(`\n❌ Tweet posting failed: ${tweetError.message}`);
+      if (tweetError.code) console.error(`   Error code: ${tweetError.code}`);
+      if (tweetError.data) console.error(`   Error data:`, JSON.stringify(tweetError.data, null, 2));
       throw tweetError;
     }
 
@@ -304,19 +391,10 @@ async function postToX(article) {
     };
 
   } catch (error) {
-    console.error("\n❌ Error posting to X:");
-    console.error(`   ${error.message}`);
-    
-    // Comprehensive error logging
+    console.error("\n❌ Error posting to X:", error.message);
     if (error.code) console.error(`   Code: ${error.code}`);
-    if (error.data) {
-      console.error(`   Data:`, JSON.stringify(error.data, null, 2));
-    }
-    if (error.errors) {
-      console.error(`   Errors:`, JSON.stringify(error.errors, null, 2));
-    }
+    if (error.data) console.error(`   Data:`, JSON.stringify(error.data, null, 2));
     
-    // Return error object instead of throwing to allow graceful handling
     return {
       success: false,
       error: error.message,
@@ -343,4 +421,4 @@ async function testConnection() {
   }
 }
 
-export { postToX, pickBestArticle, testConnection };
+export { postToX, pickBestArticle, testConnection, validateAndTestImage };
