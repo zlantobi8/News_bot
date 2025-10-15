@@ -205,11 +205,9 @@ async function saveToSanity(article, category = "general") {
 
 // --- MAIN HANDLER (FOR VERCEL CRON) ---
 export default async function handler(req, res) {
-  if (req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
-    console.warn("⚠️ Unauthorized access attempt");
-    return res.status(401).json({ error: "Unauthorized" });
+  if (req.method !== "GET") {
+    return res.status(405).json({ success: false, error: "Method not allowed" });
   }
-
   const start = Date.now();
   console.log("🚀 Starting automated news update...");
 
