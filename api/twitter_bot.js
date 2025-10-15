@@ -11,8 +11,6 @@ const twitterClient = new TwitterApi({
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
-const rwClient = twitterClient.readWrite;
-
 // --- SLUG GENERATOR ---
 function generateSlug(text) {
   return text
@@ -343,6 +341,72 @@ function createTweetText(article, postUrl) {
   return tweetText;
 }
 
+// --- UPLOAD IMAGE TO TWITTER WITH RETRY ---
+async function uploadImageToTwitter(imageBuffer, retries = 3) {
+  // Detect actual mime type from buffer
+  const magicBytes = imageBuffer.slice(0, 4);
+  let mimeType = 'image/jpeg'; // default
+  
+  if (magicBytes[0] === 0xFF && magicBytes[1] === 0xD8) {
+    mimeType = 'image/jpeg';
+  } else if (magicBytes[0] === 0x89 && magicBytes[1] === 0x50) {
+    mimeType = 'image/png';
+  } else if (magicBytes[0] === 0x47 && magicBytes[1] === 0x49) {
+    mimeType = 'image/gif';
+  }
+  
+  console.log(`   ℹ️ Detected MIME type: ${mimeType}`);
+  
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`   📤 Upload attempt ${attempt}/${retries}...`);
+      
+      const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { 
+        mimeType: mimeType,
+        target: 'tweet',
+        shared: false
+      });
+      
+      console.log(`   ✅ Media uploaded successfully (ID: ${mediaId})`);
+      return mediaId;
+      
+    } catch (error) {
+      const isLastAttempt = attempt === retries;
+      const isNetworkError = error.type === 'request' || 
+                           error.message?.includes('ECONNRESET') || 
+                           error.message?.includes('ETIMEDOUT') ||
+                           error.message?.includes('ENOTFOUND') ||
+                           error.message?.includes('Request failed');
+      
+      if (isNetworkError && !isLastAttempt) {
+        console.warn(`   ⚠️ Network error, retrying in 2s... (${error.message})`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+      
+      // Log detailed error on final attempt or non-network errors
+      console.error(`   ❌ Upload failed: ${error.message}`);
+      console.error(`   Error type: ${error.type || 'unknown'}`);
+      console.error(`   Error code: ${error.code || 'none'}`);
+      
+      if (error.data) {
+        console.error(`   Details:`, JSON.stringify(error.data, null, 2));
+      }
+      
+      if (isNetworkError) {
+        console.error(`\n   🌐 PERSISTENT NETWORK ERROR`);
+        console.error(`   Possible causes:`);
+        console.error(`   • Unstable internet connection`);
+        console.error(`   • Firewall/antivirus blocking Twitter API`);
+        console.error(`   • VPN/Proxy interference`);
+        console.error(`   • Twitter API experiencing issues`);
+      }
+      
+      throw error;
+    }
+  }
+}
+
 // --- POST TO X ---
 async function postToX(article) {
   try {
@@ -382,19 +446,70 @@ async function postToX(article) {
     console.log(`\n   📥 Getting image...`);
     const imageBuffer = await downloadImageBuffer(imageUrl, article._validatedImage);
     
+    // Validate buffer before upload
+    if (!imageBuffer || imageBuffer.length === 0) {
+      throw new Error('Image buffer is empty or invalid');
+    }
+    
+    const bufferSizeKB = (imageBuffer.length / 1024).toFixed(2);
+    console.log(`   ✓ Image buffer ready: ${bufferSizeKB} KB`);
+    
+    // Check buffer size limits for Twitter (5MB max)
+    if (imageBuffer.length > 5 * 1024 * 1024) {
+      throw new Error(`Image too large for Twitter: ${bufferSizeKB} KB (max 5MB)`);
+    }
+    
     console.log(`   📤 Uploading image to Twitter...`);
     let mediaId;
     try {
+      // Detect actual mime type from buffer
+      const magicBytes = imageBuffer.slice(0, 4);
+      let mimeType = 'image/jpeg'; // default
+      
+      if (magicBytes[0] === 0xFF && magicBytes[1] === 0xD8) {
+        mimeType = 'image/jpeg';
+      } else if (magicBytes[0] === 0x89 && magicBytes[1] === 0x50) {
+        mimeType = 'image/png';
+      } else if (magicBytes[0] === 0x47 && magicBytes[1] === 0x49) {
+        mimeType = 'image/gif';
+      }
+      
+      console.log(`   ℹ️ Detected MIME type: ${mimeType}`);
+      
       mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { 
-        mimeType: "image/jpeg",
-        target: 'tweet'
+        mimeType: mimeType,
+        target: 'tweet',
+        shared: false
       });
       console.log(`   ✅ Media uploaded successfully (ID: ${mediaId})`);
     } catch (uploadError) {
       console.error(`   ❌ Image upload failed: ${uploadError.message}`);
+      
+      // Log more details
+      console.error(`   Error type: ${uploadError.type || 'unknown'}`);
+      console.error(`   Error code: ${uploadError.code || 'none'}`);
+      
       if (uploadError.data) {
         console.error(`      Details:`, JSON.stringify(uploadError.data, null, 2));
       }
+      if (uploadError.errors) {
+        console.error(`      API errors:`, JSON.stringify(uploadError.errors, null, 2));
+      }
+      if (uploadError.rateLimit) {
+        console.error(`      Rate limit:`, uploadError.rateLimit);
+      }
+      
+      // Check if it's a network error
+      if (uploadError.type === 'request' || uploadError.message.includes('ECONNRESET') || uploadError.message.includes('ETIMEDOUT')) {
+        console.error(`\n   🌐 NETWORK ERROR DETECTED`);
+        console.error(`   This could be due to:`);
+        console.error(`   • Firewall blocking the request`);
+        console.error(`   • Network timeout`);
+        console.error(`   • VPN/Proxy interference`);
+        console.error(`   • Twitter API temporarily unavailable`);
+        throw new Error('Network error during image upload. Please try again.');
+      }
+      
       throw uploadError;
     }
     
@@ -403,7 +518,7 @@ async function postToX(article) {
     console.log(`\n   🚀 Posting tweet...`);
     let tweet;
     try {
-      tweet = await rwClient.v2.tweet({
+      tweet = await twitterClient.v2.tweet({
         text: tweetText,
         media: { media_ids: [mediaId] },
       });
