@@ -37,16 +37,22 @@ function createPostUrl(post) {
 }
 
 async function shortenUrl(longUrl) {
-  const res = await axios.post(
-    "https://api.tinyurl.com/create",
-    { url: longUrl },
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.TINYURL_API_TOKEN}`
+  try {
+    const res = await axios.post(
+      "https://api.tinyurl.com/create",
+      { url: longUrl },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.TINYURL_API_TOKEN}`
+        },
+        timeout: 10000
       }
-    }
-  );
-  return res.data.data.tiny_url;
+    );
+    return res.data.data.tiny_url;
+  } catch (error) {
+    console.warn(`   ⚠️ URL shortening failed, using original: ${error.message}`);
+    return longUrl;
+  }
 }
 
 // --- COMPREHENSIVE IMAGE VALIDATION ---
@@ -68,17 +74,17 @@ async function validateAndTestImage(url) {
       /placeholder/i,
       /dummy/i,
       /test\.jpg/i,
-      /\.(svg)$/i  // SVGs often cause issues
+      /\.(svg)$/i
     ];
     
     for (const pattern of problematicPatterns) {
       if (pattern.test(url)) {
         console.error(`   ❌ URL matches problematic pattern: ${pattern}`);
-        return { valid: false, reason: `Problematic URL pattern: ${pattern}` };
+        return { valid: false, reason: `Problematic URL pattern` };
       }
     }
     
-    // 3. Try HEAD request first (faster, less bandwidth)
+    // 3. Try HEAD request first
     let contentType, contentLength;
     try {
       const headResponse = await axios.head(url, {
@@ -86,7 +92,7 @@ async function validateAndTestImage(url) {
         maxRedirects: 5,
         validateStatus: (status) => status < 400,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
         }
       });
@@ -96,7 +102,6 @@ async function validateAndTestImage(url) {
       
     } catch (headError) {
       console.warn(`   ⚠️ HEAD request failed, trying GET: ${headError.message}`);
-      // Some servers don't support HEAD, so we'll try GET
     }
     
     // 4. Validate content type
@@ -108,54 +113,49 @@ async function validateAndTestImage(url) {
       console.log(`   ✓ Content type: ${contentType}`);
     }
     
-    // 5. Check content length (if available)
+    // 5. Check content length
     if (contentLength > 0) {
       const sizeMB = (contentLength / (1024 * 1024)).toFixed(2);
       console.log(`   ✓ Content length: ${sizeMB} MB`);
       
       if (contentLength < 1000) {
-        console.error(`   ❌ Image too small (${contentLength} bytes) - likely broken`);
+        console.error(`   ❌ Image too small (${contentLength} bytes)`);
         return { valid: false, reason: 'Image too small (likely broken)' };
       }
       
       if (contentLength > 5 * 1024 * 1024) {
-        console.error(`   ❌ Image too large (${sizeMB} MB) - exceeds 5MB limit`);
+        console.error(`   ❌ Image too large (${sizeMB} MB)`);
         return { valid: false, reason: `Image too large: ${sizeMB} MB` };
       }
     }
     
-    // 6. Actually download a portion of the image to verify it's real
-    console.log(`   📥 Downloading image sample to verify...`);
+    // 6. Download and verify image
+    console.log(`   📥 Downloading image to verify...`);
     const getResponse = await axios.get(url, {
       responseType: 'arraybuffer',
       timeout: 15000,
       maxContentLength: 5 * 1024 * 1024,
       maxRedirects: 5,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
       }
     });
     
     const buffer = Buffer.from(getResponse.data, 'binary');
     
-    // 7. Verify buffer is not empty
     if (buffer.length === 0) {
       console.error(`   ❌ Downloaded image is empty`);
       return { valid: false, reason: 'Downloaded image is empty' };
     }
     
-    // 8. Check magic bytes to verify it's actually an image
+    // 7. Check magic bytes
     const magicBytes = buffer.slice(0, 12);
     const isValidImage = 
-      // JPEG
-      (magicBytes[0] === 0xFF && magicBytes[1] === 0xD8 && magicBytes[2] === 0xFF) ||
-      // PNG
-      (magicBytes[0] === 0x89 && magicBytes[1] === 0x50 && magicBytes[2] === 0x4E && magicBytes[3] === 0x47) ||
-      // GIF
-      (magicBytes[0] === 0x47 && magicBytes[1] === 0x49 && magicBytes[2] === 0x46) ||
-      // WebP
-      (magicBytes[8] === 0x57 && magicBytes[9] === 0x45 && magicBytes[10] === 0x42 && magicBytes[11] === 0x50);
+      (magicBytes[0] === 0xFF && magicBytes[1] === 0xD8 && magicBytes[2] === 0xFF) || // JPEG
+      (magicBytes[0] === 0x89 && magicBytes[1] === 0x50 && magicBytes[2] === 0x4E && magicBytes[3] === 0x47) || // PNG
+      (magicBytes[0] === 0x47 && magicBytes[1] === 0x49 && magicBytes[2] === 0x46) || // GIF
+      (magicBytes[8] === 0x57 && magicBytes[9] === 0x45 && magicBytes[10] === 0x42 && magicBytes[11] === 0x50); // WebP
     
     if (!isValidImage) {
       console.error(`   ❌ File is not a valid image (magic bytes check failed)`);
@@ -187,20 +187,48 @@ async function validateAndTestImage(url) {
 
 // --- PICK BEST ARTICLE WITH IMAGE VALIDATION ---
 async function pickBestArticle(articles) {
-  if (!articles || articles.length === 0) return null;
+  if (!articles || articles.length === 0) {
+    console.log(`\n⚠️ No articles provided to pickBestArticle`);
+    return null;
+  }
   
   console.log(`\n📊 Evaluating ${articles.length} articles for best candidate...`);
   
   // Filter articles with basic requirements
-  const candidates = articles.filter(a => 
-    a.title && 
-    (a.content || a.description) && 
-    a.urlToImage
-  );
+  const candidates = articles.filter(a => {
+    if (!a) {
+      console.log(`   ⚠️ Skipping null/undefined article`);
+      return false;
+    }
+    
+    const hasTitle = a.title && typeof a.title === 'string' && a.title.trim().length > 0;
+    const hasContent = a.content || a.description;
+    const hasImage = (a.urlToImage || a.image) && 
+                     typeof (a.urlToImage || a.image) === 'string' && 
+                     (a.urlToImage || a.image).startsWith('http');
+    
+    if (!hasTitle) {
+      console.log(`   ⚠️ Skipping article: missing title`);
+      return false;
+    }
+    if (!hasContent) {
+      console.log(`   ⚠️ Skipping article "${a.title?.substring(0, 40)}...": missing content`);
+      return false;
+    }
+    if (!hasImage) {
+      console.log(`   ⚠️ Skipping article "${a.title?.substring(0, 40)}...": missing/invalid image URL`);
+      return false;
+    }
+    
+    return true;
+  });
   
   console.log(`   ✓ ${candidates.length} articles have title, content, and image URL`);
   
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    console.log(`   ❌ No valid candidates found`);
+    return null;
+  }
   
   // Sort by content length
   const sorted = candidates.sort((a, b) => {
@@ -216,35 +244,37 @@ async function pickBestArticle(articles) {
     const article = sorted[i];
     console.log(`\n   Testing article ${i + 1}: "${article.title.substring(0, 50)}..."`);
     
-    const validation = await validateAndTestImage(article.urlToImage);
+    // Use the image field (from Sanity) or urlToImage (from news API)
+    const imageUrl = article.image || article.urlToImage;
+    const validation = await validateAndTestImage(imageUrl);
     
     if (validation.valid) {
       console.log(`   ✅ Found article with valid image!`);
-      // Cache the validated buffer to avoid re-downloading
+      // Cache the validated buffer and normalize the structure
       article._validatedImage = {
         buffer: validation.buffer,
         size: validation.size,
         contentType: validation.contentType
       };
+      // Ensure urlToImage is set for postToX
+      article.urlToImage = imageUrl;
       return article;
     } else {
       console.log(`   ⚠️ Image invalid: ${validation.reason}`);
     }
   }
   
-  console.log(`\n⚠️ No articles found with valid images in top 5 candidates`);
+  console.log(`\n⚠️ No articles found with valid images in top ${Math.min(5, sorted.length)} candidates`);
   return null;
 }
 
 // --- DOWNLOAD IMAGE (with cached validation) ---
 async function downloadImageBuffer(url, cachedValidation = null) {
-  // If we already validated and downloaded this image, use the cached buffer
   if (cachedValidation && cachedValidation.buffer) {
     console.log(`   ♻️ Using cached image buffer (${(cachedValidation.size / 1024).toFixed(2)} KB)`);
     return cachedValidation.buffer;
   }
   
-  // Otherwise validate and download
   const validation = await validateAndTestImage(url);
   
   if (!validation.valid) {
@@ -317,13 +347,22 @@ function createTweetText(article, postUrl) {
 async function postToX(article) {
   try {
     console.log(`\n🐦 Preparing to post to X (Twitter)...`);
+    
+    // Validate article object first
+    if (!article) {
+      throw new Error("No article provided");
+    }
+    
+    if (!article.title || typeof article.title !== 'string' || article.title.trim().length === 0) {
+      throw new Error("Article missing valid title");
+    }
+    
     console.log(`   Title: "${article.title.slice(0, 60)}..."`);
     
-    if (!article.title || article.title.trim().length === 0) {
-      throw new Error("Article missing title");
-    }
-    if (!article.urlToImage) {
-      throw new Error("Article missing image URL");
+    // Check for image URL (could be 'image' from Sanity or 'urlToImage' from API)
+    const imageUrl = article.urlToImage || article.image;
+    if (!imageUrl || !imageUrl.startsWith('http')) {
+      throw new Error("Article missing valid image URL");
     }
     
     const postUrl = createPostUrl(article);
@@ -341,10 +380,7 @@ async function postToX(article) {
     
     // Use cached validated image if available, otherwise download and validate
     console.log(`\n   📥 Getting image...`);
-    const imageBuffer = await downloadImageBuffer(
-      article.urlToImage, 
-      article._validatedImage
-    );
+    const imageBuffer = await downloadImageBuffer(imageUrl, article._validatedImage);
     
     console.log(`   📤 Uploading image to Twitter...`);
     let mediaId;

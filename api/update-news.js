@@ -143,7 +143,7 @@ async function fetchSports() {
   return await fetchFromNewsAPI("sport", "us");
 }
 
-// --- FILTER ARTICLES (NOW WITH URL + IMAGE VALIDATION) ---
+// --- FILTER ARTICLES ---
 function filterArticles(articles) {
   const filtered = articles.filter((a) => {
     const hasTitle = a.title && a.title.length > 5;
@@ -196,7 +196,18 @@ async function saveToSanity(article, category = "general") {
     });
 
     console.log(`   ✅ Saved [${category}]: ${article.title.slice(0, 60)}...`);
-    return { ...article, content: detailedContent, category, _id: result._id };
+    
+    // Return the complete article with all fields needed for Twitter posting
+    return { 
+      ...article, 
+      content: detailedContent, 
+      category, 
+      _id: result._id,
+      // Keep original urlToImage for Twitter validation
+      urlToImage: article.urlToImage,
+      // Also include the Cloudinary URL as 'image' field
+      image: cloudinaryUrl
+    };
   } catch (err) {
     console.error(`   ❌ Error saving article: ${err.message}`);
     return null;
@@ -243,18 +254,26 @@ export default async function handler(req, res) {
       }
     }
 
-    const bestArticle = pickBestArticle(savedArticles);
+    console.log(`\n📋 Total articles saved: ${savedArticles.length}`);
+    
+    // CRITICAL FIX: await pickBestArticle
+    const bestArticle = await pickBestArticle(savedArticles);
     let twitterResult = null;
 
     if (bestArticle) {
       console.log("\n🐦 Posting best article to X...");
       console.log(`   Selected: "${bestArticle.title.slice(0, 60)}..."`);
       twitterResult = await postToX(bestArticle);
-      twitterResult.success
-        ? console.log("✅ Twitter post successful!")
-        : console.error("❌ Twitter posting failed:", twitterResult.error);
+      
+      if (twitterResult.success) {
+        console.log("✅ Twitter post successful!");
+        console.log(`   Tweet URL: ${twitterResult.tweetUrl}`);
+      } else {
+        console.error("❌ Twitter posting failed:", twitterResult.error);
+      }
     } else {
-      console.log("\n⚠️ No suitable articles to post");
+      console.log("\n⚠️ No suitable articles found to post to X");
+      console.log("   All articles either had invalid images or failed validation");
     }
 
     const duration = ((Date.now() - start) / 1000).toFixed(2);
@@ -267,11 +286,12 @@ export default async function handler(req, res) {
         entertainment: { saved: entertainmentCount, fetched: entertainment.length },
         sports: { saved: sportsCount, fetched: sports.length },
       },
-      twitter: twitterResult || { posted: false, reason: "No suitable articles" },
+      twitter: twitterResult || { posted: false, reason: "No suitable articles with valid images" },
       duration: `${duration}s`,
     });
   } catch (err) {
     console.error("\n❌ Fatal error:", err.message);
+    console.error(err.stack);
     res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -293,7 +313,7 @@ async function runTest() {
       const saved = await saveToSanity(a, "entertainment");
       if (saved) {
         savedArticles.push(saved);
-        if (savedArticles.length >= 1) break;
+        if (savedArticles.filter(s => s.category === 'entertainment').length >= 1) break;
       }
     }
 
@@ -302,24 +322,49 @@ async function runTest() {
       const saved = await saveToSanity(a, "sport");
       if (saved) {
         savedArticles.push(saved);
-        if (savedArticles.length >= 2) break;
+        if (savedArticles.filter(s => s.category === 'sport').length >= 1) break;
       }
     }
 
-    const best = pickBestArticle(savedArticles);
+    console.log(`\n📋 Total articles saved: ${savedArticles.length}`);
+    
+    if (savedArticles.length === 0) {
+      console.log("\n⚠️ No articles were saved. Cannot proceed with Twitter posting.");
+      console.log("✅ Test completed (no articles to post)\n");
+      return;
+    }
+
+    // CRITICAL FIX: await pickBestArticle
+    console.log("\n🔍 Selecting best article for Twitter...");
+    const best = await pickBestArticle(savedArticles);
+    
     if (best) {
-      console.log("\n🐦 Posting best article to X...");
+      console.log(`\n✅ Best article selected: "${best.title.substring(0, 60)}..."`);
+      console.log(`   Category: ${best.category}`);
+      console.log(`   Has image: ${!!(best.urlToImage || best.image)}`);
+      console.log(`   Content length: ${(best.content || '').length} chars`);
+      
+      console.log("\n🐦 Posting to X...");
       const result = await postToX(best);
-      result.success
-        ? console.log(`✅ Tweet URL: ${result.tweetUrl}`)
-        : console.error(`❌ Twitter failed: ${result.error}`);
+      
+      if (result.success) {
+        console.log(`\n✅ Tweet posted successfully!`);
+        console.log(`   Tweet URL: ${result.tweetUrl}`);
+      } else {
+        console.error(`\n❌ Twitter posting failed: ${result.error}`);
+        if (result.details) {
+          console.error(`   Details:`, result.details);
+        }
+      }
     } else {
-      console.log("\n⚠️ No valid article to post.");
+      console.log("\n⚠️ No valid article found with working images.");
+      console.log("   All articles failed image validation.");
     }
 
     console.log("\n✅ Test completed successfully!\n");
   } catch (err) {
     console.error("\n❌ TEST FAILED:", err.message);
+    console.error(err.stack);
   }
 }
 
