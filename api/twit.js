@@ -1,24 +1,44 @@
+import axios from "axios";
+import { TwitterApi } from "twitter-api-v2";
 import dotenv from "dotenv";
 dotenv.config();
-import { TwitterApi } from "twitter-api-v2";
 
-const client = new TwitterApi({
+const twitterClient = new TwitterApi({
   appKey: process.env.TWITTER_APP_KEY,
   appSecret: process.env.TWITTER_APP_SECRET,
   accessToken: process.env.TWITTER_ACCESS_TOKEN,
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
-async function testTwitter() {
+async function postTweetWithImage(tweetText, imageUrl) {
   try {
-    const me = await client.v2.me();
+    // Download image as Buffer
+    const response = await axios.get(imageUrl, {
+      responseType: "arraybuffer",
+      timeout: 15000,
+      maxRedirects: 5,
+    });
+    const imageBuffer = Buffer.from(response.data, "binary");
 
-    console.log("✅ Connected as:", me.data.username);
+    // Upload image to Twitter
+    const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, {
+      mimeType: "image/jpeg",
+    });
 
+    // Post tweet with image
+    const tweet = await twitterClient.v2.tweet({
+      text: tweetText,
+      media: { media_ids: [mediaId] },
+    });
 
-  } catch (err) {
-    console.error("❌ Twitter Auth Failed:", err.message);
+    console.log("✅ Tweet posted:", tweet.data.id);
+  } catch (error) {
+    console.error("❌ Twitter posting failed:", error);
   }
 }
 
-testTwitter();
+// Example test
+postTweetWithImage(
+  "📢 Breaking news test post",
+  "https://images.seattletimes.com/wp-content/uploads/2025/10/10132025_tzr_tzr_1635.jpg"
+);

@@ -37,6 +37,19 @@ function createPostUrl(post) {
   return `https://www.trendzlib.com.ng/${year}/${month}/${day}/${slug}`;
 }
 
+
+async function shortenUrl(longUrl) {
+  const res = await axios.post(
+    "https://api.tinyurl.com/create",
+    { url: longUrl },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.TINYURL_API_TOKEN}`
+      }
+    }
+  );
+  return res.data.data.tiny_url;
+}
 // --- PICK BEST ARTICLE ---
 function pickBestArticle(articles) {
   if (!articles || articles.length === 0) return null;
@@ -208,10 +221,11 @@ async function postToX(article) {
     
     // Create post URL and tweet text
     const postUrl = createPostUrl(article);
+    const safeUrl = await shortenUrl(postUrl);
     const contentLength = (article.content || article.description || '').length;
     console.log(`   📝 Content available: ${contentLength} characters`);
     
-    const tweetText = createTweetText(article, postUrl);
+    const tweetText = createTweetText(article, safeUrl);
     console.log(`   📏 Tweet length: ${tweetText.length}/280 characters`);
     console.log(`   📄 Tweet preview:\n      "${tweetText.substring(0, 120)}..."`);
     
