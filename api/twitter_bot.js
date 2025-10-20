@@ -11,48 +11,6 @@ const twitterClient = new TwitterApi({
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
-// --- SLUG GENERATOR ---
-function generateSlug(text) {
-  return text
-    .toLowerCase()
-    .trim()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9 -]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-// --- CREATE LINK ---
-function createPostUrl(post) {
-  const date = new Date(post.publishedAt || new Date());
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const slug = generateSlug(post.title);
-  return `https://www.trendzlib.com.ng/${year}/${month}/${day}/${slug}`;
-}
-
-async function shortenUrl(longUrl) {
-  try {
-    const res = await axios.post(
-      "https://api.tinyurl.com/create",
-      { url: longUrl },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.TINYURL_API_TOKEN}`
-        },
-        timeout: 10000
-      }
-    );
-    return res.data.data.tiny_url;
-  } catch (error) {
-    console.warn(`   ⚠️ URL shortening failed, using original: ${error.message}`);
-    return longUrl;
-  }
-}
-
 // --- COMPREHENSIVE IMAGE VALIDATION ---
 async function validateAndTestImage(url) {
   try {
@@ -282,8 +240,8 @@ async function downloadImageBuffer(url, cachedValidation = null) {
   return validation.buffer;
 }
 
-// --- CREATE TWEET TEXT ---
-function createTweetText(article, postUrl) {
+// --- CREATE TWEET TEXT (VIRAL OPTIMIZED - NO URL) ---
+function createTweetText(article) {
   const title = article.title || '';
   const maxTweetLength = 280;
   
@@ -311,11 +269,33 @@ function createTweetText(article, postUrl) {
     }
   }
   
- 
+  // Add hashtags for discoverability
+  const category = article.category || '';
+  let hashtags = '';
+  
+  if (category === 'sport' || category === 'sports') {
+    const sportTags = [
+      '#Football #Sports',
+      '#Soccer #Sports',
+      '#Football',
+      '#SportsNews',
+    ];
+    hashtags = sportTags[Math.floor(Math.random() * sportTags.length)];
+  } else if (category === 'entertainment') {
+    const entTags = [
+      '#Entertainment',
+      '#Celebrity #News',
+      '#Entertainment #Trending',
+      '#Hollywood',
+    ];
+    hashtags = entTags[Math.floor(Math.random() * entTags.length)];
+  }
+  
+  const hashtagSpace = hashtags ? hashtags.length + 2 : 0;
   const titleSpace = title.length;
- 
   const separatorSpace = 4;
-  const availableForSnippet = maxTweetLength - titleSpace  - separatorSpace;
+  
+  const availableForSnippet = maxTweetLength - titleSpace - separatorSpace - hashtagSpace;
   
   let tweetText;
   
@@ -323,91 +303,28 @@ function createTweetText(article, postUrl) {
     if (snippet.length > availableForSnippet) {
       snippet = snippet.substring(0, availableForSnippet - 3).trim() + '...';
     }
-    tweetText = `${title}\n\n${snippet}`;
-  } else if (availableForSnippet > 0) {
-    tweetText = `${title}`;
+    tweetText = hashtags 
+      ? `${title}\n\n${snippet}\n\n${hashtags}`
+      : `${title}\n\n${snippet}`;
+  } else if (hashtags && (titleSpace + hashtagSpace + 2 <= maxTweetLength)) {
+    tweetText = `${title}\n\n${hashtags}`;
   } else {
-    const maxTitleLength = maxTweetLength - 3;
-    const truncatedTitle = title.substring(0, maxTitleLength).trim() + '...';
-    tweetText = `${truncatedTitle}`;
+    if (title.length > maxTweetLength - 3) {
+      tweetText = title.substring(0, maxTweetLength - 3).trim() + '...';
+    } else {
+      tweetText = title;
+    }
   }
   
   if (tweetText.length > maxTweetLength) {
     console.warn(`   ⚠️ Tweet still too long (${tweetText.length} chars), truncating...`);
-    const maxLength = maxTweetLength - 3;
-    tweetText = title.substring(0, maxLength).trim() + '...';
+    tweetText = title.substring(0, maxTweetLength - 3).trim() + '...';
   }
   
   return tweetText;
 }
 
-// --- UPLOAD IMAGE TO TWITTER WITH RETRY ---
-async function uploadImageToTwitter(imageBuffer, retries = 3) {
-  // Detect actual mime type from buffer
-  const magicBytes = imageBuffer.slice(0, 4);
-  let mimeType = 'image/jpeg'; // default
-  
-  if (magicBytes[0] === 0xFF && magicBytes[1] === 0xD8) {
-    mimeType = 'image/jpeg';
-  } else if (magicBytes[0] === 0x89 && magicBytes[1] === 0x50) {
-    mimeType = 'image/png';
-  } else if (magicBytes[0] === 0x47 && magicBytes[1] === 0x49) {
-    mimeType = 'image/gif';
-  }
-  
-  console.log(`   ℹ️ Detected MIME type: ${mimeType}`);
-  
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      console.log(`   📤 Upload attempt ${attempt}/${retries}...`);
-      
-      const mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { 
-        mimeType: mimeType,
-        target: 'tweet',
-        shared: false
-      });
-      
-      console.log(`   ✅ Media uploaded successfully (ID: ${mediaId})`);
-      return mediaId;
-      
-    } catch (error) {
-      const isLastAttempt = attempt === retries;
-      const isNetworkError = error.type === 'request' || 
-                           error.message?.includes('ECONNRESET') || 
-                           error.message?.includes('ETIMEDOUT') ||
-                           error.message?.includes('ENOTFOUND') ||
-                           error.message?.includes('Request failed');
-      
-      if (isNetworkError && !isLastAttempt) {
-        console.warn(`   ⚠️ Network error, retrying in 2s... (${error.message})`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        continue;
-      }
-      
-      // Log detailed error on final attempt or non-network errors
-      console.error(`   ❌ Upload failed: ${error.message}`);
-      console.error(`   Error type: ${error.type || 'unknown'}`);
-      console.error(`   Error code: ${error.code || 'none'}`);
-      
-      if (error.data) {
-        console.error(`   Details:`, JSON.stringify(error.data, null, 2));
-      }
-      
-      if (isNetworkError) {
-        console.error(`\n   🌐 PERSISTENT NETWORK ERROR`);
-        console.error(`   Possible causes:`);
-        console.error(`   • Unstable internet connection`);
-        console.error(`   • Firewall/antivirus blocking Twitter API`);
-        console.error(`   • VPN/Proxy interference`);
-        console.error(`   • Twitter API experiencing issues`);
-      }
-      
-      throw error;
-    }
-  }
-}
-
-// --- POST TO X ---
+// --- POST TO X (NO URL) ---
 async function postToX(article) {
   try {
     console.log(`\n🐦 Preparing to post to X (Twitter)...`);
@@ -429,14 +346,13 @@ async function postToX(article) {
       throw new Error("Article missing valid image URL");
     }
     
-    const postUrl = createPostUrl(article);
-    const safeUrl = await shortenUrl(postUrl);
     const contentLength = (article.content || article.description || '').length;
     console.log(`   📝 Content available: ${contentLength} characters`);
     
-    const tweetText = createTweetText(article, safeUrl);
+    const tweetText = createTweetText(article);
     console.log(`   📏 Tweet length: ${tweetText.length}/280 characters`);
     console.log(`   📄 Tweet preview:\n      "${tweetText.substring(0, 120)}..."`);
+    console.log(`   🚀 VIRAL OPTIMIZED: No URL for maximum engagement`);
     
     if (tweetText.length > 280) {
       throw new Error(`Tweet too long: ${tweetText.length} characters`);
