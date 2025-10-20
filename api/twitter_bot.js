@@ -311,7 +311,7 @@ function createTweetText(article, postUrl) {
     }
   }
   
-  const readMore = `\n\nRead more: ${postUrl}`;
+  const readMore = `\n\nRead more: `;
   const titleSpace = title.length;
   const readMoreSpace = readMore.length;
   const separatorSpace = 4;
