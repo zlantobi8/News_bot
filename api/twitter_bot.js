@@ -311,11 +311,11 @@ function createTweetText(article, postUrl) {
     }
   }
   
-  const readMore = `\n\nRead more: `;
+ 
   const titleSpace = title.length;
-  const readMoreSpace = readMore.length;
+ 
   const separatorSpace = 4;
-  const availableForSnippet = maxTweetLength - titleSpace - readMoreSpace - separatorSpace;
+  const availableForSnippet = maxTweetLength - titleSpace  - separatorSpace;
   
   let tweetText;
   
@@ -323,19 +323,19 @@ function createTweetText(article, postUrl) {
     if (snippet.length > availableForSnippet) {
       snippet = snippet.substring(0, availableForSnippet - 3).trim() + '...';
     }
-    tweetText = `${title}\n\n${snippet}${readMore}`;
+    tweetText = `${title}\n\n${snippet}`;
   } else if (availableForSnippet > 0) {
-    tweetText = `${title}${readMore}`;
+    tweetText = `${title}`;
   } else {
-    const maxTitleLength = maxTweetLength - readMore.length - 3;
+    const maxTitleLength = maxTweetLength - 3;
     const truncatedTitle = title.substring(0, maxTitleLength).trim() + '...';
-    tweetText = `${truncatedTitle}${readMore}`;
+    tweetText = `${truncatedTitle}`;
   }
   
   if (tweetText.length > maxTweetLength) {
     console.warn(`   ⚠️ Tweet still too long (${tweetText.length} chars), truncating...`);
-    const maxLength = maxTweetLength - readMore.length - 3;
-    tweetText = title.substring(0, maxLength).trim() + '...' + readMore;
+    const maxLength = maxTweetLength - 3;
+    tweetText = title.substring(0, maxLength).trim() + '...';
   }
   
   return tweetText;
