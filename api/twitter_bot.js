@@ -11,6 +11,163 @@ const twitterClient = new TwitterApi({
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
+// --- SMART HASHTAG SELECTOR ---
+function selectSmartHashtags(article) {
+  const title = (article.title || '').toLowerCase();
+  const content = (article.content || article.description || '').toLowerCase();
+  const category = article.category || '';
+  const fullText = `${title} ${content}`;
+  
+  const hashtags = [];
+  
+  // SPORTS HASHTAGS
+  if (category === 'sport' || category === 'sports') {
+    // Football/Soccer specific
+    if (/messi|ronaldo|neymar|mbappe/i.test(fullText)) {
+      hashtags.push('#GOAT');
+    }
+    if (/champions league|ucl/i.test(fullText)) {
+      hashtags.push('#UCL', '#ChampionsLeague');
+    }
+    if (/premier league|epl/i.test(fullText)) {
+      hashtags.push('#PremierLeague', '#EPL');
+    }
+    if (/world cup|fifa/i.test(fullText)) {
+      hashtags.push('#WorldCup', '#FIFA');
+    }
+    if (/barcelona|barca/i.test(fullText)) {
+      hashtags.push('#Barcelona', '#Barca');
+    }
+    if (/real madrid/i.test(fullText)) {
+      hashtags.push('#RealMadrid', '#HalaMadrid');
+    }
+    if (/manchester united|man utd/i.test(fullText)) {
+      hashtags.push('#MUFC', '#ManUtd');
+    }
+    if (/liverpool/i.test(fullText)) {
+      hashtags.push('#LFC', '#Liverpool');
+    }
+    if (/arsenal/i.test(fullText)) {
+      hashtags.push('#Arsenal', '#AFC');
+    }
+    if (/chelsea/i.test(fullText)) {
+      hashtags.push('#Chelsea', '#CFC');
+    }
+    if (/transfer|signing|deal/i.test(fullText)) {
+      hashtags.push('#TransferNews');
+    }
+    if (/injury|injured/i.test(fullText)) {
+      hashtags.push('#InjuryUpdate');
+    }
+    if (/goal|scored|hat.?trick/i.test(fullText)) {
+      hashtags.push('#Goals');
+    }
+    
+    // Generic sports fallbacks
+    if (hashtags.length === 0) {
+      hashtags.push('#Football', '#Soccer');
+    }
+    hashtags.push('#Sports');
+  }
+  
+  // ENTERTAINMENT HASHTAGS
+  else if (category === 'entertainment') {
+    // Celebrity names (trending)
+    if (/taylor swift/i.test(fullText)) {
+      hashtags.push('#TaylorSwift', '#Swifties');
+    }
+    if (/beyonce|beyoncé/i.test(fullText)) {
+      hashtags.push('#Beyonce');
+    }
+    if (/drake|kendrick/i.test(fullText)) {
+      hashtags.push('#HipHop');
+    }
+    if (/kardashian|jenner/i.test(fullText)) {
+      hashtags.push('#KUWTK');
+    }
+    if (/marvel|mcu|avengers/i.test(fullText)) {
+      hashtags.push('#Marvel', '#MCU');
+    }
+    if (/dc|batman|superman/i.test(fullText)) {
+      hashtags.push('#DC', '#DCU');
+    }
+    if (/netflix|series|show/i.test(fullText)) {
+      hashtags.push('#Netflix', '#Streaming');
+    }
+    if (/movie|film|cinema/i.test(fullText)) {
+      hashtags.push('#Movies', '#Cinema');
+    }
+    if (/music|album|single/i.test(fullText)) {
+      hashtags.push('#Music', '#NewMusic');
+    }
+    if (/oscar|academy award/i.test(fullText)) {
+      hashtags.push('#Oscars');
+    }
+    if (/grammy|grammys/i.test(fullText)) {
+      hashtags.push('#Grammys');
+    }
+    if (/breakup|divorce|split/i.test(fullText)) {
+      hashtags.push('#CelebrityNews');
+    }
+    if (/wedding|married|engagement/i.test(fullText)) {
+      hashtags.push('#CelebrityWedding');
+    }
+    if (/pregnant|baby|birth/i.test(fullText)) {
+      hashtags.push('#BabyNews');
+    }
+    
+    // Generic entertainment fallbacks
+    if (hashtags.length === 0) {
+      hashtags.push('#Entertainment', '#Celebrity');
+    }
+    hashtags.push('#Trending');
+  }
+  
+  // GENERAL VIRAL HASHTAGS (contextual)
+  if (/breaking|just in|update/i.test(fullText)) {
+    hashtags.push('#BreakingNews');
+  }
+  if (/viral|trending/i.test(fullText)) {
+    hashtags.push('#Viral');
+  }
+  if (/shocking|unbelievable|amazing/i.test(fullText)) {
+    hashtags.push('#Shocking');
+  }
+  
+  // Remove duplicates and limit to 3-4 hashtags (best practice)
+  const uniqueTags = [...new Set(hashtags)];
+  const selectedTags = uniqueTags.slice(0, 4);
+  
+  // Calculate total character count
+  const tagString = selectedTags.join(' ');
+  
+  console.log(`   🏷️ Selected hashtags: ${tagString} (${tagString.length} chars)`);
+  
+  return tagString;
+}
+
+// --- GET TRENDING TOPICS (Optional Enhancement) ---
+async function getTrendingTopics() {
+  try {
+    // Get worldwide trends (WOEID 1 = Worldwide)
+    const trends = await twitterClient.v1.trendsAvailable();
+    const worldwideTrends = await twitterClient.v1.trends(1);
+    
+    if (worldwideTrends && worldwideTrends[0] && worldwideTrends[0].trends) {
+      const trendNames = worldwideTrends[0].trends
+        .slice(0, 10)
+        .map(t => t.name)
+        .filter(name => name.startsWith('#'));
+      
+      console.log(`   📈 Current trending: ${trendNames.join(', ')}`);
+      return trendNames;
+    }
+  } catch (error) {
+    console.warn(`   ⚠️ Could not fetch trending topics: ${error.message}`);
+  }
+  return [];
+}
+
 // --- COMPREHENSIVE IMAGE VALIDATION ---
 async function validateAndTestImage(url) {
   try {
@@ -240,7 +397,7 @@ async function downloadImageBuffer(url, cachedValidation = null) {
   return validation.buffer;
 }
 
-// --- CREATE TWEET TEXT (VIRAL OPTIMIZED - NO URL) ---
+// --- CREATE TWEET TEXT (WITH SMART HASHTAGS) ---
 function createTweetText(article) {
   const title = article.title || '';
   const maxTweetLength = 280;
@@ -269,36 +426,18 @@ function createTweetText(article) {
     }
   }
   
-  // Add hashtags for discoverability
-  const category = article.category || '';
-  let hashtags = '';
-  
-  if (category === 'sport' || category === 'sports') {
-    const sportTags = [
-      '#Football #Sports',
-      '#Soccer #Sports',
-      '#Football',
-      '#SportsNews',
-    ];
-    hashtags = sportTags[Math.floor(Math.random() * sportTags.length)];
-  } else if (category === 'entertainment') {
-    const entTags = [
-      '#Entertainment',
-      '#Celebrity #News',
-      '#Entertainment #Trending',
-      '#Hollywood',
-    ];
-    hashtags = entTags[Math.floor(Math.random() * entTags.length)];
-  }
+  // Get smart, contextual hashtags
+  const hashtags = selectSmartHashtags(article);
   
   const hashtagSpace = hashtags ? hashtags.length + 2 : 0;
   const titleSpace = title.length;
-  const separatorSpace = 4;
+  const separatorSpace = 4; // \n\n between sections
   
   const availableForSnippet = maxTweetLength - titleSpace - separatorSpace - hashtagSpace;
   
   let tweetText;
   
+  // Strategy 1: Title + Snippet + Hashtags (most engaging)
   if (snippet && availableForSnippet > 50) {
     if (snippet.length > availableForSnippet) {
       snippet = snippet.substring(0, availableForSnippet - 3).trim() + '...';
@@ -306,9 +445,13 @@ function createTweetText(article) {
     tweetText = hashtags 
       ? `${title}\n\n${snippet}\n\n${hashtags}`
       : `${title}\n\n${snippet}`;
-  } else if (hashtags && (titleSpace + hashtagSpace + 2 <= maxTweetLength)) {
+  }
+  // Strategy 2: Title + Hashtags only (if snippet doesn't fit)
+  else if (hashtags && (titleSpace + hashtagSpace + 2 <= maxTweetLength)) {
     tweetText = `${title}\n\n${hashtags}`;
-  } else {
+  }
+  // Strategy 3: Title only (if nothing else fits)
+  else {
     if (title.length > maxTweetLength - 3) {
       tweetText = title.substring(0, maxTweetLength - 3).trim() + '...';
     } else {
@@ -316,15 +459,22 @@ function createTweetText(article) {
     }
   }
   
+  // Final safety check
   if (tweetText.length > maxTweetLength) {
-    console.warn(`   ⚠️ Tweet still too long (${tweetText.length} chars), truncating...`);
-    tweetText = title.substring(0, maxTweetLength - 3).trim() + '...';
+    console.warn(`   ⚠️ Tweet still too long (${tweetText.length} chars), emergency truncation...`);
+    // Remove hashtags and try again
+    const withoutHashtags = `${title}\n\n${snippet}`;
+    if (withoutHashtags.length <= maxTweetLength) {
+      tweetText = withoutHashtags;
+    } else {
+      tweetText = title.substring(0, maxTweetLength - 3).trim() + '...';
+    }
   }
   
   return tweetText;
 }
 
-// --- POST TO X (NO URL) ---
+// --- POST TO X (WITH SMART HASHTAGS) ---
 async function postToX(article) {
   try {
     console.log(`\n🐦 Preparing to post to X (Twitter)...`);
@@ -349,10 +499,13 @@ async function postToX(article) {
     const contentLength = (article.content || article.description || '').length;
     console.log(`   📝 Content available: ${contentLength} characters`);
     
+    // Optional: Get trending topics for reference
+    // await getTrendingTopics();
+    
     const tweetText = createTweetText(article);
     console.log(`   📏 Tweet length: ${tweetText.length}/280 characters`);
-    console.log(`   📄 Tweet preview:\n      "${tweetText.substring(0, 120)}..."`);
-    console.log(`   🚀 VIRAL OPTIMIZED: No URL for maximum engagement`);
+    console.log(`   📄 Tweet preview:\n      "${tweetText.substring(0, 150)}..."`);
+    console.log(`   🚀 VIRAL OPTIMIZED: Smart hashtags + No URL`);
     
     if (tweetText.length > 280) {
       throw new Error(`Tweet too long: ${tweetText.length} characters`);
