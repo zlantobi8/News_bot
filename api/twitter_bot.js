@@ -62,67 +62,14 @@ function selectSmartHashtags(article) {
     if (/goal|scored|hat.?trick/i.test(fullText)) {
       hashtags.push('#Goals');
     }
-    
+
     // Generic sports fallbacks
     if (hashtags.length === 0) {
       hashtags.push('#Football', '#Soccer');
     }
     hashtags.push('#Sports');
   }
-  
-  // ENTERTAINMENT HASHTAGS
-  else if (category === 'entertainment') {
-    // Celebrity names (trending)
-    if (/taylor swift/i.test(fullText)) {
-      hashtags.push('#TaylorSwift', '#Swifties');
-    }
-    if (/beyonce|beyoncé/i.test(fullText)) {
-      hashtags.push('#Beyonce');
-    }
-    if (/drake|kendrick/i.test(fullText)) {
-      hashtags.push('#HipHop');
-    }
-    if (/kardashian|jenner/i.test(fullText)) {
-      hashtags.push('#KUWTK');
-    }
-    if (/marvel|mcu|avengers/i.test(fullText)) {
-      hashtags.push('#Marvel', '#MCU');
-    }
-    if (/dc|batman|superman/i.test(fullText)) {
-      hashtags.push('#DC', '#DCU');
-    }
-    if (/netflix|series|show/i.test(fullText)) {
-      hashtags.push('#Netflix', '#Streaming');
-    }
-    if (/movie|film|cinema/i.test(fullText)) {
-      hashtags.push('#Movies', '#Cinema');
-    }
-    if (/music|album|single/i.test(fullText)) {
-      hashtags.push('#Music', '#NewMusic');
-    }
-    if (/oscar|academy award/i.test(fullText)) {
-      hashtags.push('#Oscars');
-    }
-    if (/grammy|grammys/i.test(fullText)) {
-      hashtags.push('#Grammys');
-    }
-    if (/breakup|divorce|split/i.test(fullText)) {
-      hashtags.push('#CelebrityNews');
-    }
-    if (/wedding|married|engagement/i.test(fullText)) {
-      hashtags.push('#CelebrityWedding');
-    }
-    if (/pregnant|baby|birth/i.test(fullText)) {
-      hashtags.push('#BabyNews');
-    }
-    
-    // Generic entertainment fallbacks
-    if (hashtags.length === 0) {
-      hashtags.push('#Entertainment', '#Celebrity');
-    }
-    hashtags.push('#Trending');
-  }
-  
+
   // GENERAL VIRAL HASHTAGS (contextual)
   if (/breaking|just in|update/i.test(fullText)) {
     hashtags.push('#BreakingNews');
@@ -134,17 +81,16 @@ function selectSmartHashtags(article) {
     hashtags.push('#Shocking');
   }
   
-  // Remove duplicates and limit to 3-4 hashtags (best practice)
+  // Remove duplicates and limit to 3–4 hashtags
   const uniqueTags = [...new Set(hashtags)];
   const selectedTags = uniqueTags.slice(0, 4);
   
-  // Calculate total character count
   const tagString = selectedTags.join(' ');
-  
   console.log(`   🏷️ Selected hashtags: ${tagString} (${tagString.length} chars)`);
   
   return tagString;
 }
+
 
 // --- GET TRENDING TOPICS (Optional Enhancement) ---
 async function getTrendingTopics() {
