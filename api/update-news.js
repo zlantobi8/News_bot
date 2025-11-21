@@ -138,11 +138,9 @@ async function fetchEntertainment() {
   return unique;
 }
 
-// ...existing code...
 async function fetchSports() {
   console.log("\n📰 Fetching Football (only) News (worldwide)...");
 
-  // NewsAPI - use "everything" with q for worldwide football coverage
   try {
     const q = encodeURIComponent('football OR soccer');
     const newsApiUrl = `https://newsapi.org/v2/everything?apiKey=${process.env.NEWSAPI_KEY}&q=${q}&language=en&pageSize=50&sortBy=publishedAt`;
@@ -159,7 +157,6 @@ async function fetchSports() {
     }));
     console.log(`✓ NewsAPI: Fetched ${apiArticles.length} football articles (worldwide)`);
 
-    // NewsData - use q param for football
     const newsDataQ = encodeURIComponent("football OR soccer");
     const newsDataUrl = `https://newsdata.io/api/1/news?apikey=${process.env.NEWSDATA_KEY}&q=${newsDataQ}&language=en&page=1`;
     const { data: ndData } = await axios.get(newsDataUrl, { timeout: 10000 });
@@ -186,47 +183,72 @@ async function fetchSports() {
     return [];
   }
 }
-// ...existing code...
 
 // --- FILTER ARTICLES ---
 function filterArticles(articles) {
-  const filtered = articles.filter((a) => {
+  console.log(`\n🔍 Filtering ${articles.length} articles...`);
+  
+  const filtered = articles.filter((a, index) => {
     const hasTitle = a.title && a.title.length > 5;
     const hasImage = a.urlToImage && a.urlToImage.startsWith("http");
     const hasContent = a.content || a.description;
     const hasUrl = a.url && a.url.startsWith("http");
 
+    // Log each article's validation status
+    if (!hasTitle || !hasImage || !hasContent || !hasUrl) {
+      console.log(`   [${index + 1}] ❌ FAILED: "${a.title?.substring(0, 50)}..."`);
+      if (!hasTitle) console.log(`       - Missing valid title`);
+      if (!hasImage) console.log(`       - Missing valid image URL`);
+      if (!hasContent) console.log(`       - Missing content/description`);
+      if (!hasUrl) console.log(`       - Missing valid URL`);
+    } else {
+      console.log(`   [${index + 1}] ✅ PASSED: "${a.title?.substring(0, 50)}..."`);
+    }
+
     return hasTitle && hasImage && hasContent && hasUrl;
   });
 
-  console.log(`   Filtered: ${filtered.length}/${articles.length} valid`);
+  console.log(`   📊 Result: ${filtered.length}/${articles.length} articles passed validation`);
   return filtered;
 }
 
-// --- SAVE TO SANITY ---
+// --- SAVE TO SANITY (with enhanced debugging) ---
 async function saveToSanity(article, category = "general") {
   try {
+    console.log(`\n💾 Attempting to save article: "${article.title.slice(0, 60)}..."`);
+    
     if (!article.urlToImage) {
-      console.log(`   ⚠️ Skipping invalid article: Missing image`);
+      console.log(`   ❌ REJECTED: Missing image URL`);
       return null;
     }
 
+    // Check for existing article
+    console.log(`   🔍 Checking for duplicates in Sanity...`);
     const existing = await client.fetch(
       '*[_type=="news" && title==$title][0]',
       { title: article.title }
     );
+    
     if (existing) {
-      console.log(`   ⏭️ Already exists: ${article.title.slice(0, 60)}...`);
+      console.log(`   ⚠️ DUPLICATE FOUND: Article already exists in Sanity`);
+      console.log(`       Existing ID: ${existing._id}`);
+      console.log(`       Published: ${existing.publishedAt}`);
       return null;
     }
+    
+    console.log(`   ✅ No duplicate found - proceeding with save`);
 
     const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(
       article.urlToImage
     )}`;
 
-    console.log(`   💾 Saving: "${article.title.slice(0, 50)}..."`);
+    console.log(`   🖼️ Image URL: ${article.urlToImage.substring(0, 80)}...`);
+    console.log(`   ☁️ Cloudinary URL: ${cloudinaryUrl.substring(0, 80)}...`);
+    
+    console.log(`   🤖 Generating detailed content with AI...`);
     const detailedContent = await generateDetailedContent(article, category);
 
+    console.log(`   💾 Creating document in Sanity...`);
     const result = await client.create({
       _type: "news",
       title: article.title,
@@ -240,7 +262,9 @@ async function saveToSanity(article, category = "general") {
       publishedAt: article.publishedAt || new Date().toISOString(),
     });
 
-    console.log(`   ✅ Saved [${category}]: ${article.title.slice(0, 60)}...`);
+    console.log(`   ✅ SUCCESS! Saved to Sanity`);
+    console.log(`       Document ID: ${result._id}`);
+    console.log(`       Category: ${category}`);
     
     // Return the complete article with all fields needed for Twitter posting
     return { 
@@ -248,169 +272,104 @@ async function saveToSanity(article, category = "general") {
       content: detailedContent, 
       category, 
       _id: result._id,
-      // Keep original urlToImage for Twitter validation
       urlToImage: article.urlToImage,
-      // Also include the Cloudinary URL as 'image' field
       image: cloudinaryUrl
     };
   } catch (err) {
-    console.error(`   ❌ Error saving article: ${err.message}`);
+    console.error(`   ❌ ERROR saving article: ${err.message}`);
+    console.error(`       Stack: ${err.stack}`);
     return null;
   }
 }
 
-// --- MAIN HANDLER (FOR VERCEL CRON) ---
-export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    return res.status(405).json({ success: false, error: "Method not allowed" });
-  }
-  const start = Date.now();
-  console.log("🚀 Starting automated news update...");
+// --- MAIN TEST FUNCTION ---
+async function runDetailedTest() {
+  console.log("🚀 DETAILED NEWS UPDATE TEST");
+  console.log("=".repeat(80));
 
   try {
-    console.log("\n🔍 Testing Twitter connection...");
-    const twitterConnected = await testConnection();
-    if (!twitterConnected) console.warn("⚠️ Twitter connection failed.");
-
-    const entertainment = filterArticles(await fetchEntertainment());
-    const sports = filterArticles(await fetchSports());
-
-    let entertainmentCount = 0;
-    let sportsCount = 0;
-    const savedArticles = [];
-
-    console.log("\n📺 Processing Entertainment News:");
-    for (const a of entertainment) {
-      const saved = await saveToSanity(a, "entertainment");
-      if (saved) {
-        savedArticles.push(saved);
-        entertainmentCount++;
-        if (entertainmentCount >= 1) break;
-      }
-    }
-
-    console.log("\n⚽ Processing Sports News:");
-    for (const a of sports) {
-      const saved = await saveToSanity(a, "sport");
-      if (saved) {
-        savedArticles.push(saved);
-        sportsCount++;
-        if (sportsCount >= 1) break;
-      }
-    }
-
-    console.log(`\n📋 Total articles saved: ${savedArticles.length}`);
-    
-    // CRITICAL FIX: await pickBestArticle
-    const bestArticle = await pickBestArticle(savedArticles);
-    let twitterResult = null;
-
-    if (bestArticle) {
-      console.log("\n🐦 Posting best article to X...");
-      console.log(`   Selected: "${bestArticle.title.slice(0, 60)}..."`);
-      twitterResult = await postToX(bestArticle);
-      
-      if (twitterResult.success) {
-        console.log("✅ Twitter post successful!");
-        console.log(`   Tweet URL: ${twitterResult.tweetUrl}`);
-      } else {
-        console.error("❌ Twitter posting failed:", twitterResult.error);
-      }
-    } else {
-      console.log("\n⚠️ No suitable articles found to post to X");
-      console.log("   All articles either had invalid images or failed validation");
-    }
-
-    const duration = ((Date.now() - start) / 1000).toFixed(2);
-    console.log(`\n✅ News update completed in ${duration}s`);
-
-    res.status(200).json({
-      success: true,
-      message: "News updated successfully",
-      stats: {
-        entertainment: { saved: entertainmentCount, fetched: entertainment.length },
-        sports: { saved: sportsCount, fetched: sports.length },
-      },
-      twitter: twitterResult || { posted: false, reason: "No suitable articles with valid images" },
-      duration: `${duration}s`,
-    });
-  } catch (err) {
-    console.error("\n❌ Fatal error:", err.message);
-    console.error(err.stack);
-    res.status(500).json({ success: false, error: err.message });
-  }
-}
-
-// --- LOCAL TEST FUNCTION ---
-async function runTest() {
-  console.log("🚀 Starting News Update Test");
-  console.log("=".repeat(70));
-
-  try {
+    console.log("\n1️⃣ Testing Twitter Connection...");
     await testConnection();
 
-    const entertainment = filterArticles(await fetchEntertainment());
-    const sports = filterArticles(await fetchSports());
+    console.log("\n2️⃣ Fetching Articles...");
+    const entertainment = await fetchEntertainment();
+    const sports = await fetchSports();
+    
+    console.log("\n3️⃣ Filtering Articles...");
+    const filteredEntertainment = filterArticles(entertainment);
+    const filteredSports = filterArticles(sports);
+
     const savedArticles = [];
+    let entertainmentSaved = 0;
+    let sportsSaved = 0;
 
-    console.log("\n📺 Processing Entertainment News:");
-    for (const a of entertainment) {
-      const saved = await saveToSanity(a, "entertainment");
+    console.log("\n4️⃣ Processing Entertainment Articles...");
+    console.log(`   Target: Save 1 entertainment article`);
+    for (let i = 0; i < filteredEntertainment.length && entertainmentSaved < 1; i++) {
+      console.log(`\n   --- Processing Entertainment Article ${i + 1}/${filteredEntertainment.length} ---`);
+      const saved = await saveToSanity(filteredEntertainment[i], "entertainment");
       if (saved) {
         savedArticles.push(saved);
-        if (savedArticles.filter(s => s.category === 'entertainment').length >= 1) break;
+        entertainmentSaved++;
+        console.log(`   🎯 Entertainment article ${entertainmentSaved}/1 saved!`);
       }
     }
 
-    console.log("\n⚽ Processing Sports News:");
-    for (const a of sports) {
-      const saved = await saveToSanity(a, "sport");
+    console.log("\n5️⃣ Processing Sports Articles...");
+    console.log(`   Target: Save 1 sports article`);
+    for (let i = 0; i < filteredSports.length && sportsSaved < 1; i++) {
+      console.log(`\n   --- Processing Sports Article ${i + 1}/${filteredSports.length} ---`);
+      const saved = await saveToSanity(filteredSports[i], "sport");
       if (saved) {
         savedArticles.push(saved);
-        if (savedArticles.filter(s => s.category === 'sport').length >= 1) break;
+        sportsSaved++;
+        console.log(`   🎯 Sports article ${sportsSaved}/1 saved!`);
       }
     }
 
-    console.log(`\n📋 Total articles saved: ${savedArticles.length}`);
+    console.log("\n6️⃣ Summary of Saved Articles:");
+    console.log(`   📺 Entertainment: ${entertainmentSaved}/1`);
+    console.log(`   ⚽ Sports: ${sportsSaved}/1`);
+    console.log(`   📋 Total: ${savedArticles.length} articles saved`);
     
     if (savedArticles.length === 0) {
-      console.log("\n⚠️ No articles were saved. Cannot proceed with Twitter posting.");
-      console.log("✅ Test completed (no articles to post)\n");
+      console.log("\n⚠️ NO ARTICLES SAVED!");
+      console.log("   Possible reasons:");
+      console.log("   1. All articles already exist in Sanity (duplicates)");
+      console.log("   2. All articles failed validation");
+      console.log("   3. Sanity API error");
+      console.log("\n   💡 Recommendation: Clear your Sanity database or check API keys");
       return;
     }
 
-    // CRITICAL FIX: await pickBestArticle
-    console.log("\n🔍 Selecting best article for Twitter...");
+    console.log("\n7️⃣ Selecting Best Article for Twitter...");
     const best = await pickBestArticle(savedArticles);
     
     if (best) {
-      console.log(`\n✅ Best article selected: "${best.title.substring(0, 60)}..."`);
+      console.log(`   ✅ Selected: "${best.title.substring(0, 60)}..."`);
       console.log(`   Category: ${best.category}`);
-      console.log(`   Has image: ${!!(best.urlToImage || best.image)}`);
-      console.log(`   Content length: ${(best.content || '').length} chars`);
+      console.log(`   Image URL: ${(best.urlToImage || best.image)?.substring(0, 60)}...`);
       
-      console.log("\n🐦 Posting to X...");
+      console.log("\n8️⃣ Posting to Twitter...");
       const result = await postToX(best);
       
       if (result.success) {
-        console.log(`\n✅ Tweet posted successfully!`);
+        console.log(`\n✅ TWITTER POST SUCCESSFUL!`);
         console.log(`   Tweet URL: ${result.tweetUrl}`);
       } else {
         console.error(`\n❌ Twitter posting failed: ${result.error}`);
-        if (result.details) {
-          console.error(`   Details:`, result.details)
-        }
       }
     } else {
-      console.log("\n⚠️ No valid article found with working images.");
-      console.log("   All articles failed image validation.");
+      console.log(`   ⚠️ No valid article with working images found`);
     }
 
-    console.log("\n✅ Test completed successfully!\n");
+    console.log("\n" + "=".repeat(80));
+    console.log("✅ Test completed!\n");
   } catch (err) {
     console.error("\n❌ TEST FAILED:", err.message);
     console.error(err.stack);
   }
 }
 
-// Uncomment to run test
+// Run the detailed test
+runDetailedTest();
