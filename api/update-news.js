@@ -398,7 +398,7 @@ async function runTest() {
       } else {
         console.error(`\n❌ Twitter posting failed: ${result.error}`);
         if (result.details) {
-          console.error(`   Details:`, result.details);
+          console.error(`   Details:`, result.details)
         }
       }
     } else {
