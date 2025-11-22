@@ -372,4 +372,3 @@ async function runDetailedTest() {
 }
 
 // Run the detailed test
-runDetailedTest();
