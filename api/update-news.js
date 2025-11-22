@@ -2,7 +2,14 @@ import axios from "axios";
 import { createClient } from "@sanity/client";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
-dotenv.config();
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load .env from root directory
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 // --- CONFIGURE SANITY ---
 const client = createClient({
@@ -25,17 +32,93 @@ function getCategoryClass(category) {
   return classMap[category] || "tag-base-sm bg-secondary";
 }
 
-// --- GENERATE AI CONTENT (Temporarily Disabled) ---
+// --- GENERATE AI CONTENT WITH GEMINI ---
 async function generateDetailedContent(article, category) {
-  console.log(`   📝 Using original content (AI generation temporarily disabled)`);
-  
-  // Use the full content from the news API
-  const fallback = article.content || 
-                   article.description || 
-                   `${article.title}\n\nRead more at the source.`;
-  
-  console.log(`   ✅ Content ready (${fallback.length} chars)`);
-  return fallback;
+  try {
+    console.log(`   🤖 Generating AI-enhanced content...`);
+    
+    // Try multiple model names in order of preference
+    const modelNames = [
+      "gemini-2.0-flash-exp",  // Latest experimental
+      "gemini-2.0-flash",      // Current stable
+      "gemini-1.5-flash",      // Previous generation
+      "gemini-1.5-pro",        // More powerful fallback
+      "gemini-pro"             // Legacy fallback
+    ];
+    
+    let model = null;
+    let workingModel = null;
+    
+    // Try each model until one works
+    for (const modelName of modelNames) {
+      try {
+        model = genAI.getGenerativeModel({ model: modelName });
+        
+        // Test with a simple prompt
+        const testResult = await model.generateContent("test");
+        await testResult.response;
+        
+        workingModel = modelName;
+        console.log(`   ✓ Using model: ${modelName}`);
+        break;
+      } catch (err) {
+        console.log(`   ⚠️ Model ${modelName} not available, trying next...`);
+        continue;
+      }
+    }
+    
+    if (!workingModel) {
+      throw new Error('No working Gemini model found');
+    }
+    
+    const originalContent = article.content || article.description || '';
+    const source = article.source?.name || 'News Source';
+    
+    const prompt = `You are a professional news writer for Trendzlib, a ${category} news platform.
+
+ARTICLE DETAILS:
+Title: ${article.title}
+Source: ${source}
+Category: ${category}
+Original Content: ${originalContent}
+
+TASK: Rewrite this article in an engaging, professional style. 
+
+REQUIREMENTS:
+1. Write 3-5 well-structured paragraphs (300-500 words)
+2. Maintain factual accuracy - don't add information not in the original
+3. Use an engaging, journalistic tone appropriate for ${category} news
+4. Start with a strong hook that captures attention
+5. Include relevant context and details from the original article
+6. End with a concluding statement or future outlook
+7. Write in a flowing narrative style, not bullet points
+8. DO NOT include the title in your response
+9. DO NOT add any promotional language or calls to action
+
+Write the article now:`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const generatedText = response.text();
+    
+    if (!generatedText || generatedText.trim().length < 100) {
+      throw new Error('Generated content too short');
+    }
+    
+    console.log(`   ✅ AI content generated (${generatedText.length} chars)`);
+    return generatedText.trim();
+    
+  } catch (error) {
+    console.warn(`   ⚠️ AI generation failed: ${error.message}`);
+    console.log(`   📝 Falling back to original content`);
+    
+    // Fallback to original content
+    const fallback = article.content || 
+                     article.description || 
+                     `${article.title}\n\nRead more at the source.`;
+    
+    return fallback;
+  }
 }
 
 // --- FETCH FROM NEWSAPI.ORG ---
@@ -114,9 +197,10 @@ async function fetchEntertainment() {
 }
 
 async function fetchSports() {
-  console.log("\n📰 Fetching Football (only) News (worldwide)...");
+  console.log("\n📰 Fetching Football News (worldwide)...");
 
   try {
+    // Fetch from NewsAPI with football/soccer query
     const q = encodeURIComponent('football OR soccer');
     const newsApiUrl = `https://newsapi.org/v2/everything?apiKey=${process.env.NEWSAPI_KEY}&q=${q}&language=en&pageSize=50&sortBy=publishedAt`;
     const { data: apiData } = await axios.get(newsApiUrl, { timeout: 10000 });
@@ -132,20 +216,32 @@ async function fetchSports() {
     }));
     console.log(`✓ NewsAPI: Fetched ${apiArticles.length} football articles (worldwide)`);
 
-    const newsDataQ = encodeURIComponent("football OR soccer");
-    const newsDataUrl = `https://newsdata.io/api/1/news?apikey=${process.env.NEWSDATA_KEY}&q=${newsDataQ}&language=en&page=1`;
-    const { data: ndData } = await axios.get(newsDataUrl, { timeout: 10000 });
-    const ndArticles = (ndData.results || []).map((a) => ({
-      title: a.title,
-      description: a.description,
-      content: a.content,
-      urlToImage: a.image_url,
-      url: a.link,
-      source: { name: a.source_name || a.source_id },
-      author: a.creator?.[0],
-      publishedAt: a.pubDate,
-    }));
-    console.log(`✓ NewsData: Fetched ${ndArticles.length} football articles (worldwide)`);
+    // Try NewsData with sports category instead of query
+    let ndArticles = [];
+    try {
+      const newsDataUrl = `https://newsdata.io/api/1/news?apikey=${process.env.NEWSDATA_KEY}&category=sports&language=en`;
+      const { data: ndData } = await axios.get(newsDataUrl, { timeout: 10000 });
+      ndArticles = (ndData.results || [])
+        .filter(a => {
+          // Filter for football-related articles
+          const text = `${a.title} ${a.description || ''}`.toLowerCase();
+          return text.includes('football') || text.includes('soccer');
+        })
+        .map((a) => ({
+          title: a.title,
+          description: a.description,
+          content: a.content,
+          urlToImage: a.image_url,
+          url: a.link,
+          source: { name: a.source_name || a.source_id },
+          author: a.creator?.[0],
+          publishedAt: a.pubDate,
+        }));
+      console.log(`✓ NewsData: Fetched ${ndArticles.length} football articles`);
+    } catch (ndError) {
+      console.warn(`⚠️ NewsData sports fetch failed: ${ndError.message}`);
+      console.log(`   Continuing with NewsAPI articles only`);
+    }
 
     const combined = [...ndArticles, ...apiArticles];
     const unique = combined.filter(
