@@ -4,6 +4,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
+import { fetchSportsScraped } from "./sports-scraper.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,22 +40,19 @@ async function generateDetailedContent(article, category) {
     
     // Try multiple model names in order of preference
     const modelNames = [
-      "gemini-2.0-flash-exp",  // Latest experimental
-      "gemini-2.0-flash",      // Current stable
-      "gemini-1.5-flash",      // Previous generation
-      "gemini-1.5-pro",        // More powerful fallback
-      "gemini-pro"             // Legacy fallback
+      "gemini-2.0-flash-exp",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+      "gemini-1.5-pro",
+      "gemini-pro"
     ];
     
     let model = null;
     let workingModel = null;
     
-    // Try each model until one works
     for (const modelName of modelNames) {
       try {
         model = genAI.getGenerativeModel({ model: modelName });
-        
-        // Test with a simple prompt
         const testResult = await model.generateContent("test");
         await testResult.response;
         
@@ -112,7 +110,6 @@ Write the article now:`;
     console.warn(`   ⚠️ AI generation failed: ${error.message}`);
     console.log(`   📝 Falling back to original content`);
     
-    // Fallback to original content
     const fallback = article.content || 
                      article.description || 
                      `${article.title}\n\nRead more at the source.`;
@@ -121,136 +118,58 @@ Write the article now:`;
   }
 }
 
-// --- FETCH FROM NEWSAPI.ORG ---
-async function fetchFromNewsAPI(category, country = "ng", retries = 3) {
-  const categoryMap = { sport: "sports", entertainment: "entertainment" };
-  const mappedCategory = categoryMap[category] || category;
-
-  for (let i = 0; i < retries; i++) {
-    try {
-      const url = `https://newsapi.org/v2/top-headlines?apiKey=${process.env.NEWSAPI_KEY}&category=${mappedCategory}&country=${country}&pageSize=20`;
-      const { data } = await axios.get(url, { timeout: 10000 });
-      console.log(
-        `✓ NewsAPI: Fetched ${data.articles?.length || 0} ${category} articles from ${country.toUpperCase()}`
-      );
-
-      return data.articles.map((a) => ({
-        title: a.title,
-        description: a.description,
-        content: a.content,
-        urlToImage: a.urlToImage,
-        url: a.url,
-        source: { name: a.source?.name },
-        author: a.author,
-        publishedAt: a.publishedAt,
-      }));
-    } catch (error) {
-      console.error(`NewsAPI attempt ${i + 1}/${retries} failed:`, error.message);
-      if (i === retries - 1) return [];
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-  }
-  return [];
-}
-
-// --- FETCH FROM NEWSDATA.IO ---
-async function fetchFromNewsData(category, country = "ng", retries = 3) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const url = `https://newsdata.io/api/1/news?apikey=${process.env.NEWSDATA_KEY}&category=${category}&country=${country}&language=en`;
-      const { data } = await axios.get(url, { timeout: 10000 });
-      console.log(
-        `✓ NewsData: Fetched ${data.results?.length || 0} ${category} articles from ${country.toUpperCase()}`
-      );
-
-      return data.results.map((a) => ({
-        title: a.title,
-        description: a.description,
-        content: a.content,
-        urlToImage: a.image_url,
-        url: a.link,
-        source: { name: a.source_name || a.source_id },
-        author: a.creator?.[0],
-        publishedAt: a.pubDate,
-      }));
-    } catch (error) {
-      console.error(`NewsData attempt ${i + 1}/${retries} failed:`, error.message);
-      if (i === retries - 1) return [];
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-  }
-  return [];
-}
-
-// --- COMBINED FETCHERS ---
+// --- FETCH ENTERTAINMENT FROM SCRAPERS ---
 async function fetchEntertainment() {
-  console.log("\n📰 Fetching Entertainment News...");
-  const apiNews = await fetchFromNewsAPI("entertainment", "us");
-  const dataNews = await fetchFromNewsData("entertainment", "ng");
-  const combined = [...dataNews, ...apiNews];
-
-  const unique = combined.filter(
-    (a, i, self) => i === self.findIndex((b) => b.title === a.title)
-  );
-  console.log(`   Combined: ${unique.length} unique entertainment articles`);
-  return unique;
-}
-
-async function fetchSports() {
-  console.log("\n📰 Fetching Football News (worldwide)...");
-
+  console.log("\n📰 Fetching Entertainment News from Nigerian sources...");
+  
   try {
-    // Fetch from NewsAPI with football/soccer query
-    const q = encodeURIComponent('football OR soccer');
-    const newsApiUrl = `https://newsapi.org/v2/everything?apiKey=${process.env.NEWSAPI_KEY}&q=${q}&language=en&pageSize=50&sortBy=publishedAt`;
-    const { data: apiData } = await axios.get(newsApiUrl, { timeout: 10000 });
-    const apiArticles = (apiData.articles || []).map((a) => ({
+    const scrapedArticles = await fetchEntertainmentScraped();
+    
+    // Map scraped articles to match existing format
+    const articles = scrapedArticles.map((a) => ({
       title: a.title,
-      description: a.description,
-      content: a.content,
-      urlToImage: a.urlToImage,
-      url: a.url,
-      source: { name: a.source?.name },
-      author: a.author,
+      description: a.detail?.substring(0, 200) + "..." || a.title,
+      content: a.detail,
+      urlToImage: a.image,
+      url: a.link,
+      source: { name: a.source },
+      author: a.source || "Trendzlib Editorial",
       publishedAt: a.publishedAt,
     }));
-    console.log(`✓ NewsAPI: Fetched ${apiArticles.length} football articles (worldwide)`);
-
-    // Try NewsData with sports category instead of query
-    let ndArticles = [];
-    try {
-      const newsDataUrl = `https://newsdata.io/api/1/news?apikey=${process.env.NEWSDATA_KEY}&category=sports&language=en`;
-      const { data: ndData } = await axios.get(newsDataUrl, { timeout: 10000 });
-      ndArticles = (ndData.results || [])
-        .filter(a => {
-          // Filter for football-related articles
-          const text = `${a.title} ${a.description || ''}`.toLowerCase();
-          return text.includes('football') || text.includes('soccer');
-        })
-        .map((a) => ({
-          title: a.title,
-          description: a.description,
-          content: a.content,
-          urlToImage: a.image_url,
-          url: a.link,
-          source: { name: a.source_name || a.source_id },
-          author: a.creator?.[0],
-          publishedAt: a.pubDate,
-        }));
-      console.log(`✓ NewsData: Fetched ${ndArticles.length} football articles`);
-    } catch (ndError) {
-      console.warn(`⚠️ NewsData sports fetch failed: ${ndError.message}`);
-      console.log(`   Continuing with NewsAPI articles only`);
-    }
-
-    const combined = [...ndArticles, ...apiArticles];
-    const unique = combined.filter(
-      (a, i, self) => i === self.findIndex((b) => b.title === a.title)
-    );
-    console.log(`   Combined: ${unique.length} unique football articles`);
-    return unique;
+    
+    console.log(`   ✅ Scraped: ${articles.length} entertainment articles`);
+    return articles;
+    
   } catch (err) {
-    console.error("❌ fetchSports (football) failed:", err.message);
+    console.error("❌ fetchEntertainment (scraping) failed:", err.message);
+    return [];
+  }
+}
+
+// --- FETCH SPORTS FROM SCRAPERS ---
+async function fetchSports() {
+  console.log("\n⚽ Fetching Sports News from Nigerian sources...");
+
+  try {
+    const scrapedArticles = await fetchSportsScraped();
+    
+    // Map scraped articles to match existing format
+    const articles = scrapedArticles.map((a) => ({
+      title: a.title,
+      description: a.detail?.substring(0, 200) + "..." || a.title,
+      content: a.detail,
+      urlToImage: a.image,
+      url: a.link,
+      source: { name: a.source },
+      author: a.source || "Trendzlib Sports",
+      publishedAt: a.publishedAt,
+    }));
+    
+    console.log(`   ✅ Scraped: ${articles.length} sports articles`);
+    return articles;
+    
+  } catch (err) {
+    console.error("❌ fetchSports (scraping) failed:", err.message);
     return [];
   }
 }
@@ -325,13 +244,12 @@ async function saveToSanity(article, category = "general") {
 
 // --- MAIN HANDLER (FOR VERCEL CRON) ---
 export default async function handler(req, res) {
-  // Only allow GET requests
   if (req.method !== "GET") {
     return res.status(405).json({ success: false, error: "Method not allowed" });
   }
   
   const start = Date.now();
-  console.log("🚀 Starting automated news update...");
+  console.log("🚀 Starting automated news update (using web scrapers)...");
 
   try {
     const entertainment = filterArticles(await fetchEntertainment());
@@ -347,7 +265,7 @@ export default async function handler(req, res) {
       if (saved) {
         savedArticles.push(saved);
         entertainmentCount++;
-        if (entertainmentCount >= 1) break;
+        if (entertainmentCount >= 3) break; // Save up to 3 articles
       }
     }
 
@@ -357,7 +275,7 @@ export default async function handler(req, res) {
       if (saved) {
         savedArticles.push(saved);
         sportsCount++;
-        if (sportsCount >= 1) break;
+        if (sportsCount >= 3) break; // Save up to 3 articles
       }
     }
 
@@ -368,13 +286,14 @@ export default async function handler(req, res) {
 
     res.status(200).json({
       success: true,
-      message: "News updated successfully",
+      message: "News updated successfully (via web scraping)",
       stats: {
         entertainment: { saved: entertainmentCount, fetched: entertainment.length },
         sports: { saved: sportsCount, fetched: sports.length },
         total: savedArticles.length
       },
       duration: `${duration}s`,
+      source: "Web Scraping (TheCable, Complete Sports, Punch)"
     });
   } catch (err) {
     console.error("\n❌ Fatal error:", err.message);
