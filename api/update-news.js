@@ -1,18 +1,25 @@
+// server.js
+import express from "express";
 import axios from "axios";
+import * as cheerio from "cheerio";
+import cors from "cors";
 import { createClient } from "@sanity/client";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import { fetchSportsScraped } from "./sports-scraper.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env from root directory
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-// --- CONFIGURE SANITY ---
+const app = express();
+app.use(cors());
+
+// ------------------------
+// SANITY CONFIG
+// ------------------------
 const client = createClient({
   projectId: process.env.SANITY_PROJECT_ID,
   dataset: process.env.SANITY_DATASET,
@@ -21,10 +28,26 @@ const client = createClient({
   apiVersion: "2023-10-01",
 });
 
-// --- CONFIGURE GOOGLE GEMINI AI ---
+// ------------------------
+// GOOGLE GEMINI AI CONFIG
+// ------------------------
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// --- CATEGORY CLASS HELPER ---
+// ------------------------
+// HELPERS
+// ------------------------
+async function fetchHtml(url, timeout = 30000) {
+  const { data } = await axios.get(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+    timeout,
+  });
+  return data;
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function getCategoryClass(category) {
   const classMap = {
     entertainment: "tag-base-sm",
@@ -33,271 +56,273 @@ function getCategoryClass(category) {
   return classMap[category] || "tag-base-sm bg-secondary";
 }
 
-// --- GENERATE AI CONTENT WITH GEMINI ---
+// ------------------------
+// LEGIT NG ENTERTAINMENT
+// ------------------------
+async function scrapeLegit() {
+  const url = "https://www.legit.ng/entertainment/";
+  const results = [];
+
+  try {
+    const html = await fetchHtml(url);
+    const $ = cheerio.load(html);
+
+    $("article, div.story-card, .story-card__content").each((i, el) => {
+      const el$ = $(el);
+
+      let title =
+        el$.find(".story-card__title a").text().trim() ||
+        el$.find("h2 a, h3 a").text().trim() ||
+        el$.find("a").first().text().trim();
+
+      let link =
+        el$.find(".story-card__title a").attr("href") ||
+        el$.find("a").first().attr("href");
+
+      if (link && !link.startsWith("http")) link = "https://www.legit.ng" + link;
+
+      let image = el$.find("img").attr("src") || el$.find("img").attr("data-src") || null;
+
+      if (title && link && image) results.push({ title, link, image, source: "Legit NG", detail: null });
+    });
+
+    // Fetch detail for each article
+    await Promise.all(results.map(async (art, idx) => {
+      await delay(idx * 500);
+      try {
+        const articleHTML = await fetchHtml(art.link);
+        const $a = cheerio.load(articleHTML);
+        const content = [];
+        $a("div.article-content p").each((i, el) => {
+          const text = $a(el).text().trim();
+          if (text) content.push(text);
+        });
+        art.detail = content.join("\n\n") || "";
+      } catch (err) {
+        console.error("Error fetching Legit article detail:", art.link, err.message);
+        art.detail = "";
+      }
+    }));
+
+  } catch (err) {
+    console.log("Legit scrape failed:", err.message);
+  }
+
+  return results;
+}
+
+// ------------------------
+// SKYSPORTS FOOTBALL NEWS
+// ------------------------
+let skyCache = { timestamp: 0, data: [] };
+const SKY_CACHE_DURATION = 1000 * 60 * 3;
+
+async function scrapeSkyNews() {
+  if (Date.now() - skyCache.timestamp < SKY_CACHE_DURATION && skyCache.data.length > 0) {
+    return skyCache.data;
+  }
+
+  const url = "https://www.skysports.com/football/news";
+  const results = [];
+
+  try {
+    const { data } = await axios.get(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+    const $ = cheerio.load(data);
+
+    $("h2, h3").each((i, el) => {
+      const title = $(el).text().trim();
+      let anchor = $(el).closest("a");
+      let link = anchor.attr("href") || $(el).find("a").attr("href");
+      if (!title || !link) return;
+      if (link.includes("/video/") || link.includes("/live-blog/")) return;
+      if (!link.startsWith("http")) link = "https://www.skysports.com" + link;
+
+      results.push({ title, link, image: null, detail: null, source: "SkySports" });
+    });
+
+    // Remove duplicates
+    const unique = [];
+    const seen = new Set();
+    for (const art of results) {
+      if (!seen.has(art.link)) {
+        seen.add(art.link);
+        unique.push(art);
+      }
+    }
+
+    // Fetch each article page
+    await Promise.all(unique.map(async (art) => {
+      try {
+        const { data: articleHTML } = await axios.get(art.link, { headers: { "User-Agent": "Mozilla/5.0" } });
+        const $a = cheerio.load(articleHTML);
+
+        const img = $a("img.sdc-article-image__item").attr("src") || $a("meta[property='og:image']").attr("content") || null;
+        if (!img) return;
+        art.image = img;
+
+        const content = [];
+        $a(".sdc-article-body p").each((i, el) => {
+          const text = $a(el).text().trim();
+          if (text) content.push(text);
+        });
+        art.detail = content.join("\n\n") || "";
+      } catch (err) {
+        console.error("Error fetching SkySports detail:", art.link, err.message);
+      }
+    }));
+
+    const finalArticles = unique.filter(a => a.image !== null);
+    skyCache = { timestamp: Date.now(), data: finalArticles };
+    return finalArticles;
+
+  } catch (err) {
+    console.error("SkySports scrape error:", err.message);
+    return [];
+  }
+}
+
+// ------------------------
+// AI CONTENT GENERATOR
+// ------------------------
 async function generateDetailedContent(article, category) {
   try {
-    console.log(`   🤖 Generating AI-enhanced content...`);
-    
-    // Try multiple model names in order of preference
-    const modelNames = [
-      "gemini-2.0-flash-exp",
-      "gemini-2.0-flash",
-      "gemini-1.5-flash",
-      "gemini-1.5-pro",
-      "gemini-pro"
-    ];
-    
-    let model = null;
-    let workingModel = null;
-    
+    console.log(`🤖 Generating AI content for: ${article.title}`);
+
+    const modelNames = ["gemini-2.0-flash-exp", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"];
+    let workingModel = null, model = null;
+
     for (const modelName of modelNames) {
       try {
         model = genAI.getGenerativeModel({ model: modelName });
         const testResult = await model.generateContent("test");
         await testResult.response;
-        
         workingModel = modelName;
-        console.log(`   ✓ Using model: ${modelName}`);
         break;
-      } catch (err) {
-        console.log(`   ⚠️ Model ${modelName} not available, trying next...`);
-        continue;
-      }
+      } catch {}
     }
-    
-    if (!workingModel) {
-      throw new Error('No working Gemini model found');
-    }
-    
-    const originalContent = article.content || article.description || '';
-    const source = article.source?.name || 'News Source';
-    
+
+    if (!workingModel) throw new Error("No working Gemini model found");
+
     const prompt = `You are a professional news writer for Trendzlib, a ${category} news platform.
 
 ARTICLE DETAILS:
 Title: ${article.title}
-Source: ${source}
+Source: ${article.source?.name || article.source || 'News Source'}
 Category: ${category}
-Original Content: ${originalContent}
+Original Content: ${article.detail || ''}
 
-TASK: Rewrite this article in an engaging, professional style. 
-
-REQUIREMENTS:
-1. Write 3-5 well-structured paragraphs (300-500 words)
-2. Maintain factual accuracy - don't add information not in the original
-3. Use an engaging, journalistic tone appropriate for ${category} news
-4. Start with a strong hook that captures attention
-5. Include relevant context and details from the original article
-6. End with a concluding statement or future outlook
-7. Write in a flowing narrative style, not bullet points
-8. DO NOT include the title in your response
-9. DO NOT add any promotional language or calls to action
-
-Write the article now:`;
+TASK: Rewrite this article in an engaging, professional style.
+Requirements:
+- 3-5 paragraphs (300-500 words)
+- Maintain factual accuracy
+- Journalistic tone
+- Start with a hook
+- End with a conclusion
+- No title, no promotional language`;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const generatedText = response.text();
-    
-    if (!generatedText || generatedText.trim().length < 100) {
-      throw new Error('Generated content too short');
-    }
-    
-    console.log(`   ✅ AI content generated (${generatedText.length} chars)`);
+    if (!generatedText || generatedText.trim().length < 100) throw new Error("Generated content too short");
+
     return generatedText.trim();
-    
-  } catch (error) {
-    console.warn(`   ⚠️ AI generation failed: ${error.message}`);
-    console.log(`   📝 Falling back to original content`);
-    
-    const fallback = article.content || 
-                     article.description || 
-                     `${article.title}\n\nRead more at the source.`;
-    
-    return fallback;
-  }
-}
 
-// --- FETCH ENTERTAINMENT FROM SCRAPERS ---
-async function fetchEntertainment() {
-  console.log("\n📰 Fetching Entertainment News from Nigerian sources...");
-  
-  try {
-    const scrapedArticles = await fetchEntertainmentScraped();
-    
-    // Map scraped articles to match existing format
-    const articles = scrapedArticles.map((a) => ({
-      title: a.title,
-      description: a.detail?.substring(0, 200) + "..." || a.title,
-      content: a.detail,
-      urlToImage: a.image,
-      url: a.link,
-      source: { name: a.source },
-      author: a.source || "Trendzlib Editorial",
-      publishedAt: a.publishedAt,
-    }));
-    
-    console.log(`   ✅ Scraped: ${articles.length} entertainment articles`);
-    return articles;
-    
   } catch (err) {
-    console.error("❌ fetchEntertainment (scraping) failed:", err.message);
-    return [];
+    console.warn(`⚠️ AI generation failed: ${err.message}`);
+    return article.detail || `${article.title}\n\nRead more at the source.`;
   }
 }
 
-// --- FETCH SPORTS FROM SCRAPERS ---
-async function fetchSports() {
-  console.log("\n⚽ Fetching Sports News from Nigerian sources...");
+// ------------------------
+// SAVE TO SANITY
+// ------------------------
+async function saveToSanity(article, category) {
+  // Check existing
+  const existing = await client.fetch('*[_type=="news" && title==$title][0]', { title: article.title });
+  if (existing) return null;
 
-  try {
-    const scrapedArticles = await fetchSportsScraped();
-    
-    // Map scraped articles to match existing format
-    const articles = scrapedArticles.map((a) => ({
-      title: a.title,
-      description: a.detail?.substring(0, 200) + "..." || a.title,
-      content: a.detail,
-      urlToImage: a.image,
-      url: a.link,
-      source: { name: a.source },
-      author: a.source || "Trendzlib Sports",
-      publishedAt: a.publishedAt,
-    }));
-    
-    console.log(`   ✅ Scraped: ${articles.length} sports articles`);
-    return articles;
-    
-  } catch (err) {
-    console.error("❌ fetchSports (scraping) failed:", err.message);
-    return [];
-  }
-}
+  // Generate AI content
+  const detailedContent = await generateDetailedContent(article, category);
+  article.detail = detailedContent;
 
-// --- FILTER ARTICLES ---
-function filterArticles(articles) {
-  const filtered = articles.filter((a) => {
-    const hasTitle = a.title && a.title.length > 5;
-    const hasImage = a.urlToImage && a.urlToImage.startsWith("http");
-    const hasContent = a.content || a.description;
-    const hasUrl = a.url && a.url.startsWith("http");
+  const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.image)}`;
 
-    return hasTitle && hasImage && hasContent && hasUrl;
+  const result = await client.create({
+    _type: "news",
+    title: article.title,
+    content: detailedContent,
+    category,
+    categoryClass: getCategoryClass(category),
+    image: cloudinaryUrl,
+    source: article.source?.name || article.source || "Unknown Source",
+    link: article.link,
+    author: article.source || "Trendzlib Editorial",
+    publishedAt: new Date().toISOString(),
   });
 
-  console.log(`   Filtered: ${filtered.length}/${articles.length} valid`);
+  return { ...article, content: detailedContent, category, _id: result._id, image: cloudinaryUrl };
+}
+
+// ------------------------
+// FETCH & FILTER (Top 3 after checking Sanity)
+// ------------------------
+async function fetchTopArticles(scrapeFunc, category, limit = 3) {
+  const scraped = await scrapeFunc();
+  const filtered = [];
+
+  for (const art of scraped) {
+    const exists = await client.fetch('*[_type=="news" && title==$title][0]', { title: art.title });
+    if (!exists) filtered.push(art);
+    if (filtered.length >= limit) break;
+  }
+
   return filtered;
 }
 
-// --- SAVE TO SANITY ---
-async function saveToSanity(article, category = "general") {
-  try {
-    if (!article.urlToImage) {
-      console.log(`   ⚠️ Skipping invalid article: Missing image`);
-      return null;
-    }
+// ------------------------
+// ROUTES
+// ------------------------
+app.get("/", (req, res) => res.send("Multi Scraper API Running ⚽🎬"));
 
-    const existing = await client.fetch(
-      '*[_type=="news" && title==$title][0]',
-      { title: article.title }
-    );
-    if (existing) {
-      console.log(`   ⏭️ Already exists: ${article.title.slice(0, 60)}...`);
-      return null;
-    }
-
-    const cloudinaryUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(
-      article.urlToImage
-    )}`;
-
-    console.log(`   💾 Saving: "${article.title.slice(0, 50)}..."`);
-    const detailedContent = await generateDetailedContent(article, category);
-
-    const result = await client.create({
-      _type: "news",
-      title: article.title,
-      content: detailedContent,
-      category,
-      categoryClass: getCategoryClass(category),
-      image: cloudinaryUrl,
-      source: article.source?.name || "Unknown Source",
-      link: article.url,
-      author: article.author || "Trendzlib Editorial",
-      publishedAt: article.publishedAt || new Date().toISOString(),
-    });
-
-    console.log(`   ✅ Saved [${category}]: ${article.title.slice(0, 60)}...`);
-    
-    return { 
-      ...article, 
-      content: detailedContent, 
-      category, 
-      _id: result._id,
-      urlToImage: article.urlToImage,
-      image: cloudinaryUrl
-    };
-  } catch (err) {
-    console.error(`   ❌ Error saving article: ${err.message}`);
-    return null;
-  }
-}
-
-// --- MAIN HANDLER (FOR VERCEL CRON) ---
-export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    return res.status(405).json({ success: false, error: "Method not allowed" });
-  }
-  
+app.get("/update-news", async (req, res) => {
   const start = Date.now();
-  console.log("🚀 Starting automated news update (using web scrapers)...");
-
   try {
-    const entertainment = filterArticles(await fetchEntertainment());
-    const sports = filterArticles(await fetchSports());
+    const entertainment = await fetchTopArticles(scrapeLegit, "entertainment", 3);
+    const sports = await fetchTopArticles(scrapeSkyNews, "sport", 3);
 
-    let entertainmentCount = 0;
-    let sportsCount = 0;
     const savedArticles = [];
 
-    console.log("\n📺 Processing Entertainment News:");
     for (const a of entertainment) {
       const saved = await saveToSanity(a, "entertainment");
-      if (saved) {
-        savedArticles.push(saved);
-        entertainmentCount++;
-        if (entertainmentCount >= 3) break; // Save up to 3 articles
-      }
+      if (saved) savedArticles.push(saved);
     }
 
-    console.log("\n⚽ Processing Sports News:");
     for (const a of sports) {
       const saved = await saveToSanity(a, "sport");
-      if (saved) {
-        savedArticles.push(saved);
-        sportsCount++;
-        if (sportsCount >= 3) break; // Save up to 3 articles
-      }
+      if (saved) savedArticles.push(saved);
     }
 
-    console.log(`\n📋 Total articles saved: ${savedArticles.length}`);
-
     const duration = ((Date.now() - start) / 1000).toFixed(2);
-    console.log(`\n✅ News update completed in ${duration}s`);
 
     res.status(200).json({
       success: true,
-      message: "News updated successfully (via web scraping)",
       stats: {
-        entertainment: { saved: entertainmentCount, fetched: entertainment.length },
-        sports: { saved: sportsCount, fetched: sports.length },
-        total: savedArticles.length
+        entertainment: { fetched: entertainment.length, saved: savedArticles.filter(a => a.category === 'entertainment').length },
+        sports: { fetched: sports.length, saved: savedArticles.filter(a => a.category === 'sport').length },
+        totalSaved: savedArticles.length
       },
       duration: `${duration}s`,
-      source: "Web Scraping (TheCable, Complete Sports, Punch)"
+      source: "Web Scraping + AI content"
     });
+
   } catch (err) {
-    console.error("\n❌ Fatal error:", err.message);
-    console.error(err.stack);
+    console.error(err);
     res.status(500).json({ success: false, error: err.message });
   }
-}
+});
+
+// ------------------------
+// START SERVER
+// ------------------------
+const PORT = 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT} ⚽🎬`));
