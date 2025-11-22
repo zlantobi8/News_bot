@@ -2,7 +2,6 @@ import axios from "axios";
 import { createClient } from "@sanity/client";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
-import { pickBestArticle, postToX, testConnection } from "./twitter_bot.js";
 dotenv.config();
 
 // --- CONFIGURE SANITY ---
@@ -239,10 +238,6 @@ export default async function handler(req, res) {
   console.log("🚀 Starting automated news update...");
 
   try {
-    console.log("\n🔍 Testing Twitter connection...");
-    const twitterConnected = await testConnection();
-    if (!twitterConnected) console.warn("⚠️ Twitter connection failed.");
-
     const entertainment = filterArticles(await fetchEntertainment());
     const sports = filterArticles(await fetchSports());
 
@@ -271,25 +266,6 @@ export default async function handler(req, res) {
     }
 
     console.log(`\n📋 Total articles saved: ${savedArticles.length}`);
-    
-    const bestArticle = await pickBestArticle(savedArticles);
-    let twitterResult = null;
-
-    if (bestArticle) {
-      console.log("\n🐦 Posting best article to X...");
-      console.log(`   Selected: "${bestArticle.title.slice(0, 60)}..."`);
-      twitterResult = await postToX(bestArticle);
-      
-      if (twitterResult.success) {
-        console.log("✅ Twitter post successful!");
-        console.log(`   Tweet URL: ${twitterResult.tweetUrl}`);
-      } else {
-        console.error("❌ Twitter posting failed:", twitterResult.error);
-      }
-    } else {
-      console.log("\n⚠️ No suitable articles found to post to X");
-      console.log("   All articles either had invalid images or failed validation");
-    }
 
     const duration = ((Date.now() - start) / 1000).toFixed(2);
     console.log(`\n✅ News update completed in ${duration}s`);
@@ -300,8 +276,8 @@ export default async function handler(req, res) {
       stats: {
         entertainment: { saved: entertainmentCount, fetched: entertainment.length },
         sports: { saved: sportsCount, fetched: sports.length },
+        total: savedArticles.length
       },
-      twitter: twitterResult || { posted: false, reason: "No suitable articles with valid images" },
       duration: `${duration}s`,
     });
   } catch (err) {
