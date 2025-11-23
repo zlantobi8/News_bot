@@ -404,3 +404,22 @@ export default async function handler(req, res) {
     });
   }
 }
+
+// -----------------------------------------
+// LOCAL MODE: run as Express server
+// -----------------------------------------
+if (process.env.LOCAL_SERVER === "true") {
+  import("express").then(({ default: express }) => {
+    const app = express();
+    app.use(express.json({ limit: "1mb" }));
+
+    app.all("/api/update-news", (req, res) => handler(req, res));
+
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, () => {
+      console.log(`🚀 Local server running at http://localhost:${PORT}/api/update-news`);
+    });
+  }).catch(err => {
+    console.error("Failed to start local server:", err);
+  });
+}
