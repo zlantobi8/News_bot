@@ -335,14 +335,14 @@ export default async function handler(req, res) {
     let sports = [];
 
     try {
-      entertainment = await scrapeLegit(2); // Reduced to 2 for faster execution
+      entertainment = await scrapeLegit(4); // Reduced to 2 for faster execution
       await delay(1000);
     } catch (error) {
       console.error("Entertainment scraping failed:", error.message);
     }
 
     try {
-      sports = await scrapeSkyNews(2); // Reduced to 2 for faster execution
+      sports = await scrapeSkyNews(4); // Reduced to 2 for faster execution
       await delay(1000);
     } catch (error) {
       console.error("Sports scraping failed:", error.message);
