@@ -3,7 +3,10 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import { createClient } from "@sanity/client";
 import dotenv from "dotenv";
+import { postToX, validateAndTestImage } from "./twitter_bot.js";
+
 dotenv.config();
+
 // ------------------------
 // SANITY CONFIG
 // ------------------------
@@ -294,15 +297,106 @@ async function saveArticleToSanity(article, category) {
       link: article.link,
       author: article.source || "Trendzlib Editorial",
       publishedAt: new Date().toISOString(),
-      aiGenerated: false
+      aiGenerated: false,
+      postedToTwitter: false
     });
 
     console.log(`Saved: ${article.title} (${content.length} chars)`);
-    return { ...article, _id: result._id, image: imageUrl, contentLength: content.length };
+    return { 
+      ...article, 
+      _id: result._id, 
+      image: imageUrl, 
+      content: content,
+      contentLength: content.length,
+      category: category
+    };
   } catch (error) {
     console.error(`Failed to save article:`, error.message);
     return null;
   }
+}
+
+// ------------------------
+// POST FIRST NEW SPORT ARTICLE TO TWITTER
+// ------------------------
+async function postFirstSportToTwitter(newSportsArticles) {
+  if (!newSportsArticles || newSportsArticles.length === 0) {
+    console.log('\n📢 No new sports articles to post to Twitter');
+    return null;
+  }
+
+  console.log('\n🐦 ════════════════════════════════════════');
+  console.log('   TWITTER POSTING - SPORTS NEWS');
+  console.log('════════════════════════════════════════\n');
+
+  // Validate images and pick the best one
+  for (let i = 0; i < newSportsArticles.length; i++) {
+    const article = newSportsArticles[i];
+    console.log(`\n🔍 Checking article ${i + 1}/${newSportsArticles.length}:`);
+    console.log(`   Title: "${article.title.substring(0, 60)}..."`);
+    
+    // Validate image
+    const validation = await validateAndTestImage(article.image);
+    
+    if (validation.valid) {
+      console.log(`   ✅ Image is valid! Posting to Twitter...\n`);
+      
+      // Cache the validated image
+      article._validatedImage = {
+        buffer: validation.buffer,
+        size: validation.size,
+        contentType: validation.contentType
+      };
+      
+      // Normalize structure for postToX
+      article.urlToImage = article.image;
+      
+      try {
+        const twitterResult = await postToX(article);
+        
+        if (twitterResult.success) {
+          // Mark as posted in Sanity
+          try {
+            await client
+              .patch(article._id)
+              .set({ 
+                postedToTwitter: true,
+                twitterPostId: twitterResult.tweetId,
+                twitterPostUrl: twitterResult.tweetUrl,
+                twitterPostedAt: new Date().toISOString()
+              })
+              .commit();
+            
+            console.log(`\n✅ Article marked as posted in Sanity`);
+          } catch (updateError) {
+            console.warn(`⚠️ Failed to update Sanity: ${updateError.message}`);
+          }
+          
+          return {
+            success: true,
+            article: {
+              title: article.title,
+              source: article.source
+            },
+            twitter: {
+              tweetId: twitterResult.tweetId,
+              tweetUrl: twitterResult.tweetUrl
+            }
+          };
+        } else {
+          console.error(`❌ Twitter posting failed: ${twitterResult.error}`);
+        }
+      } catch (twitterError) {
+        console.error(`❌ Twitter error: ${twitterError.message}`);
+      }
+    } else {
+      console.log(`   ⚠️ Image invalid: ${validation.reason}`);
+      console.log(`   → Trying next article...`);
+    }
+  }
+
+  console.log('\n⚠️ No articles with valid images found for Twitter posting');
+  return null;
 }
 
 // ------------------------
@@ -335,20 +429,21 @@ export default async function handler(req, res) {
     let sports = [];
 
     try {
-      entertainment = await scrapeLegit(4); // Reduced to 2 for faster execution
+      entertainment = await scrapeLegit(4);
       await delay(1000);
     } catch (error) {
       console.error("Entertainment scraping failed:", error.message);
     }
 
     try {
-      sports = await scrapeSkyNews(4); // Reduced to 2 for faster execution
+      sports = await scrapeSkyNews(4);
       await delay(1000);
     } catch (error) {
       console.error("Sports scraping failed:", error.message);
     }
 
     const savedArticles = [];
+    const newSportsArticles = [];
 
     // Save entertainment articles with content
     for (const article of entertainment) {
@@ -361,37 +456,49 @@ export default async function handler(req, res) {
       }
     }
 
-    // Save sports articles with content
+    // Save sports articles with content (track NEW ones)
     for (const article of sports) {
       try {
         const saved = await saveArticleToSanity(article, "sport");
-        if (saved) savedArticles.push(saved);
+        if (saved) {
+          savedArticles.push(saved);
+          newSportsArticles.push(saved); // Track new sports articles
+        }
         await delay(500);
       } catch (error) {
         console.error(`Failed to save sports article:`, error.message);
       }
     }
 
-    console.log(`Successfully saved ${savedArticles.length} articles with content`);
+    console.log(`\nSuccessfully saved ${savedArticles.length} articles with content`);
+    console.log(`   → ${newSportsArticles.length} new sports articles`);
+
+    // Post FIRST new sports article to Twitter
+    let twitterPost = null;
+    if (newSportsArticles.length > 0) {
+      twitterPost = await postFirstSportToTwitter(newSportsArticles);
+    }
 
     res.status(200).json({
       success: true,
       stats: {
         entertainment: { 
           fetched: entertainment.length, 
-          saved: savedArticles.filter(a => entertainment.some(e => e.title === a.title)).length 
+          saved: savedArticles.filter(a => a.category === "entertainment").length 
         },
         sports: { 
           fetched: sports.length, 
-          saved: savedArticles.filter(a => sports.some(s => s.title === a.title)).length 
+          saved: newSportsArticles.length
         },
         totalSaved: savedArticles.length
       },
       articles: savedArticles.map(a => ({ 
         title: a.title, 
         source: a.source,
+        category: a.category,
         contentLength: a.contentLength 
       })),
+      twitter: twitterPost || { message: "No sports article posted to Twitter" },
       timestamp: new Date().toISOString()
     });
 
