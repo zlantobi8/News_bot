@@ -60,7 +60,7 @@ async function deleteAllNews() {
   }
 }
 
-// Run the deletion
+// Run the deleti
 console.log("⚠️  WARNING: This will delete ALL news from Sanity!\n");
 console.log("Starting in 3 seconds... Press Ctrl+C to cancel\n");
 
