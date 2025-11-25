@@ -423,14 +423,14 @@ export default async function handler(req, res) {
     let sports = [];
 
     try {
-      entertainment = await scrapeLegit(4);
+      entertainment = await scrapeLegit(3);
       await delay(1000);
     } catch (error) {
       console.error("Entertainment scraping failed:", error.message);
     }
 
     try {
-      sports = await scrapeSkyNews(6);
+      sports = await scrapeSkyNews(3);
       await delay(1000);
     } catch (error) {
       console.error("Sports scraping failed:", error.message);
