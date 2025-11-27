@@ -259,37 +259,56 @@ async function scrapeSkyNews(limit = 3) {
 }
 
 // ------------------------
-// SAVE WITH CONTENT TO SANITY + TWITTER INTEGRATION
-async function saveArticleToSanity(article, category, twitterEnabled = false) {
+// SIMPLIFIED SAVE TO SANITY (ALWAYS SAVE, TWITTER OPTIONAL)
+// ------------------------
+async function saveArticleToSanity(article, category, attemptTwitter = false) {
   try {
-    // 1. CHECK IF ARTICLE EXISTS (DUPLICATE CHECK)
+    console.log(`\n📝 Processing: "${article.title}"`);
+    
+    // 1. CHECK FOR DUPLICATES
     const existing = await client.fetch(
       '*[_type=="news" && title==$title][0]',
       { title: article.title }
     );
     
     if (existing) {
-      console.log(`⏭️  Skipping duplicate: ${article.title}`);
-      return { skipped: true, reason: 'duplicate' };
+      console.log(`   ⏭️  DUPLICATE - Skipping`);
+      return { skipped: true, reason: 'duplicate', title: article.title };
     }
-
-    console.log(`\n✅ NEW ARTICLE FOUND: "${article.title}"`);
 
     // 2. EXTRACT CONTENT
     let content = '';
-    if (article.source === "Legit NG") {
-      content = await extractLegitContent(article.link);
-      await delay(800);
-    } else if (article.source === "SkySports") {
-      content = await extractSkyContent(article.link);
-      await delay(800);
+    try {
+      if (article.source === "Legit NG") {
+        content = await extractLegitContent(article.link);
+      } else if (article.source === "SkySports") {
+        content = await extractSkyContent(article.link);
+      }
+      console.log(`   ✅ Content extracted: ${content.length} chars`);
+      await delay(500);
+    } catch (contentError) {
+      console.error(`   ⚠️  Content extraction failed: ${contentError.message}`);
+      content = 'Content not available. Please visit the source link.';
     }
 
-    const imageUrl = article.image 
-      ? `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.image)}`
-      : "https://via.placeholder.com/800x450?text=No+Image";
+    // 3. PREPARE IMAGE URL (use original or Cloudinary)
+    let imageUrl = article.image;
+    
+    // Only use Cloudinary if image exists and is valid HTTP URL
+    if (imageUrl && imageUrl.startsWith('http')) {
+      try {
+        imageUrl = `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.image)}`;
+        console.log(`   📸 Using Cloudinary proxy`);
+      } catch (e) {
+        console.log(`   ⚠️  Using original image URL`);
+        imageUrl = article.image;
+      }
+    } else {
+      console.log(`   ⚠️  No valid image, using placeholder`);
+      imageUrl = "https://via.placeholder.com/800x450?text=No+Image";
+    }
 
-    // 3. VALIDATE IMAGE FOR TWITTER (if it's a sport article and Twitter is enabled)
+    // 4. TWITTER INTEGRATION (OPTIONAL - DOESN'T BLOCK SAVE)
     let twitterData = {
       postedToTwitter: false,
       twitterPostDate: null,
@@ -297,37 +316,27 @@ async function saveArticleToSanity(article, category, twitterEnabled = false) {
       tweetUrl: null
     };
 
-    if (twitterEnabled && category === "sport") {
-      console.log(`\n🐦 TWITTER CHECK: Validating image for Twitter...`);
+    if (attemptTwitter) {
+      console.log(`   🐦 Attempting Twitter post...`);
       
-      const validation = await validateAndTestImage(imageUrl);
-      
-      if (validation.valid) {
-        console.log(`   ✅ Image valid! Preparing to post to Twitter...`);
+      try {
+        // Quick validation - less strict
+        const validation = await validateAndTestImage(imageUrl);
         
-        // Create article object for Twitter
-        const articleForTwitter = {
-          title: article.title,
-          content: content,
-          urlToImage: imageUrl,
-          category: category,
-          source: article.source,
-          _validatedImage: {
-            buffer: validation.buffer,
-            size: validation.size,
-            contentType: validation.contentType
-          }
-        };
+        if (validation.valid) {
+          const articleForTwitter = {
+            title: article.title,
+            content: content,
+            urlToImage: imageUrl,
+            category: category,
+            source: article.source,
+            _validatedImage: validation
+          };
 
-        // 4. POST TO TWITTER BEFORE SAVING TO SANITY
-        try {
-          console.log(`   🚀 Posting to Twitter...`);
           const twitterResult = await postToX(articleForTwitter);
           
           if (twitterResult.success) {
-            console.log(`   ✅ Successfully posted to Twitter!`);
-            console.log(`   🔗 Tweet URL: ${twitterResult.tweetUrl}`);
-            
+            console.log(`   ✅ Posted to Twitter: ${twitterResult.tweetUrl}`);
             twitterData = {
               postedToTwitter: true,
               twitterPostDate: new Date().toISOString(),
@@ -335,19 +344,20 @@ async function saveArticleToSanity(article, category, twitterEnabled = false) {
               tweetUrl: twitterResult.tweetUrl
             };
           } else {
-            console.log(`   ⚠️  Twitter posting failed: ${twitterResult.error}`);
+            console.log(`   ⚠️  Twitter post failed: ${twitterResult.error}`);
           }
-        } catch (twitterError) {
-          console.error(`   ❌ Twitter error: ${twitterError.message}`);
+        } else {
+          console.log(`   ⚠️  Image validation failed for Twitter: ${validation.reason}`);
         }
-      } else {
-        console.log(`   ⚠️  Image validation failed: ${validation.reason}`);
-        console.log(`   ⏭️  Will save to Sanity without posting to Twitter`);
+      } catch (twitterError) {
+        console.log(`   ⚠️  Twitter error (continuing anyway): ${twitterError.message}`);
       }
     }
 
-    // 5. SAVE TO SANITY (with Twitter data if posted)
-    const result = await client.create({
+    // 5. SAVE TO SANITY (ALWAYS HAPPENS)
+    console.log(`   💾 Saving to Sanity...`);
+    
+    const sanityDoc = {
       _type: "news",
       title: article.title,
       content: content,
@@ -360,27 +370,36 @@ async function saveArticleToSanity(article, category, twitterEnabled = false) {
       publishedAt: new Date().toISOString(),
       aiGenerated: false,
       ...twitterData
-    });
+    };
 
-    console.log(`💾 Saved to Sanity: ${article.title} (${content.length} chars)`);
+    const result = await client.create(sanityDoc);
+    
+    console.log(`   ✅ SAVED to Sanity (ID: ${result._id})`);
     
     return { 
-      ...article, 
-      _id: result._id, 
-      image: imageUrl, 
+      success: true,
+      skipped: false,
+      _id: result._id,
+      title: article.title,
       contentLength: content.length,
-      twitter: twitterData,
-      skipped: false
+      twitter: twitterData
     };
     
   } catch (error) {
-    console.error(`Failed to save article:`, error.message);
-    return { skipped: true, reason: 'error', error: error.message };
+    console.error(`   ❌ SAVE FAILED: ${error.message}`);
+    console.error(`   Stack: ${error.stack}`);
+    return { 
+      skipped: true, 
+      reason: 'error', 
+      error: error.message,
+      title: article.title 
+    };
   }
 }
 
 // ------------------------
 // HANDLER (Vercel Serverless Function)
+// ------------------------
 export default async function handler(req, res) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -397,206 +416,131 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log("Starting news scraping with Twitter integration...");
+    console.log("\n🚀 ========== STARTING NEWS SCRAPING ==========\n");
 
     // Validate environment variables
     if (!process.env.SANITY_PROJECT_ID || !process.env.SANITY_DATASET || !process.env.SANITY_TOKEN) {
       throw new Error("Missing Sanity configuration in environment variables");
     }
 
-    // Check if Twitter is enabled
-    let twitterEnabled = !!(
+    console.log("✅ Sanity config validated");
+    console.log(`   Project: ${process.env.SANITY_PROJECT_ID}`);
+    console.log(`   Dataset: ${process.env.SANITY_DATASET}`);
+
+    // Check Twitter credentials
+    const twitterEnabled = !!(
       process.env.TWITTER_APP_KEY &&
       process.env.TWITTER_APP_SECRET &&
       process.env.TWITTER_ACCESS_TOKEN &&
       process.env.TWITTER_ACCESS_SECRET
     );
 
-    if (twitterEnabled) {
-      console.log("✅ Twitter integration enabled - will post BEST sport article only");
-    } else {
-      console.log("⚠️  Twitter integration disabled (missing credentials)");
-    }
+    console.log(`\n🐦 Twitter: ${twitterEnabled ? '✅ ENABLED' : '⚠️  DISABLED'}\n`);
 
-    // Scrape article listings
+    // Scrape articles
+    console.log("📰 SCRAPING ARTICLES...\n");
+    
     let entertainment = [];
     let sports = [];
 
     try {
       entertainment = await scrapeLegit(3);
+      console.log(`✅ Entertainment: ${entertainment.length} articles found`);
       await delay(1000);
     } catch (error) {
-      console.error("Entertainment scraping failed:", error.message);
+      console.error(`❌ Entertainment scraping failed: ${error.message}`);
     }
 
     try {
       sports = await scrapeSkyNews(3);
+      console.log(`✅ Sports: ${sports.length} articles found`);
       await delay(1000);
     } catch (error) {
-      console.error("Sports scraping failed:", error.message);
+      console.error(`❌ Sports scraping failed: ${error.message}`);
     }
 
     const savedArticles = [];
     const skippedArticles = [];
-    let twitterPosts = 0;
 
-    // Save entertainment articles (no Twitter posting)
-    console.log("\n📰 Processing entertainment articles...");
+    // Process ENTERTAINMENT articles (no Twitter)
+    console.log("\n\n📺 ========== PROCESSING ENTERTAINMENT ==========");
     for (const article of entertainment) {
-      try {
-        const saved = await saveArticleToSanity(article, "entertainment", false);
-        if (saved.skipped) {
-          skippedArticles.push({ ...article, reason: saved.reason });
-        } else {
-          savedArticles.push(saved);
-        }
-        await delay(500);
-      } catch (error) {
-        console.error(`Failed to save entertainment article:`, error.message);
+      const result = await saveArticleToSanity(article, "entertainment", false);
+      
+      if (result.skipped) {
+        skippedArticles.push(result);
+      } else {
+        savedArticles.push(result);
       }
+      
+      await delay(500);
     }
 
-    // Save sports articles (WITH Twitter posting - only 1 best article)
-    console.log("\n⚽ Processing sports articles WITH Twitter integration...");
+    // Process SPORTS articles (with Twitter for best one)
+    console.log("\n\n⚽ ========== PROCESSING SPORTS ==========");
     
-    // First, collect all valid NEW sports articles
-    const validSportsArticles = [];
-    
+    // Save all sports articles first
     for (const article of sports) {
-      try {
-        // Check if it's a duplicate
-        const existing = await client.fetch(
-          '*[_type=="news" && title==$title][0]',
-          { title: article.title }
+      const result = await saveArticleToSanity(article, "sport", false);
+      
+      if (result.skipped) {
+        skippedArticles.push(result);
+      } else {
+        savedArticles.push(result);
+      }
+      
+      await delay(500);
+    }
+
+    // If Twitter enabled, post the BEST saved sports article
+    if (twitterEnabled && savedArticles.some(a => a.twitter && !a.twitter.postedToTwitter)) {
+      console.log("\n\n🐦 ========== TWITTER: POSTING BEST ARTICLE ==========");
+      
+      const sportArticles = savedArticles.filter(a => 
+        sports.some(s => s.title === a.title) && !a.twitter.postedToTwitter
+      );
+      
+      if (sportArticles.length > 0) {
+        // Just post the first one for simplicity
+        const bestArticle = sportArticles[0];
+        console.log(`\n🎯 Selected: "${bestArticle.title}"`);
+        
+        // Fetch full article from Sanity
+        const fullArticle = await client.fetch(
+          '*[_type=="news" && _id==$id][0]',
+          { id: bestArticle._id }
         );
         
-        if (existing) {
-          console.log(`⏭️  Skipping duplicate: ${article.title}`);
-          skippedArticles.push({ ...article, reason: 'duplicate' });
-        } else {
-          console.log(`✅ NEW ARTICLE FOUND: "${article.title}"`);
-          
-          // Extract content
-          const content = await extractSkyContent(article.link);
-          await delay(800);
-          
-          const imageUrl = article.image 
-            ? `https://res.cloudinary.com/dwgzccy1i/image/fetch/w_800,h_450,c_fill,q_auto,f_auto/${encodeURIComponent(article.image)}`
-            : "https://via.placeholder.com/800x450?text=No+Image";
-          
-          validSportsArticles.push({
-            ...article,
-            content,
-            imageUrl
-          });
-        }
-        await delay(500);
-      } catch (error) {
-        console.error(`Failed to process sports article:`, error.message);
-      }
-    }
-    
-    console.log(`\n📊 Found ${validSportsArticles.length} NEW sports articles`);
-    
-    // Now pick the BEST one and post to Twitter
-    let bestArticlePosted = null;
-    
-    if (twitterEnabled && validSportsArticles.length > 0) {
-      console.log(`\n🏆 Selecting BEST article for Twitter...`);
-      
-      // Prepare articles for pickBestArticle function
-      const articlesForSelection = validSportsArticles.map(a => ({
-        title: a.title,
-        content: a.content,
-        urlToImage: a.imageUrl,
-        image: a.imageUrl,
-        category: 'sport',
-        source: a.source
-      }));
-      
-      const { pickBestArticle } = await import('./twitter_bot.js');
-      const bestArticle = await pickBestArticle(articlesForSelection);
-      
-      if (bestArticle) {
-        console.log(`\n🎯 BEST ARTICLE SELECTED: "${bestArticle.title}"`);
-        
-        // Post to Twitter
         try {
-          console.log(`   🚀 Posting to Twitter...`);
-          const twitterResult = await postToX(bestArticle);
+          const twitterResult = await postToX({
+            title: fullArticle.title,
+            content: fullArticle.content,
+            urlToImage: fullArticle.image,
+            category: 'sport'
+          });
           
           if (twitterResult.success) {
-            console.log(`   ✅ Successfully posted to Twitter!`);
-            console.log(`   🔗 Tweet URL: ${twitterResult.tweetUrl}`);
-            bestArticlePosted = {
-              title: bestArticle.title,
+            // Update Sanity with Twitter info
+            await client.patch(bestArticle._id).set({
+              postedToTwitter: true,
+              twitterPostDate: new Date().toISOString(),
               tweetId: twitterResult.tweetId,
               tweetUrl: twitterResult.tweetUrl
-            };
-            twitterPosts = 1;
+            }).commit();
+            
+            console.log(`✅ Posted to Twitter: ${twitterResult.tweetUrl}`);
           }
         } catch (twitterError) {
-          console.error(`   ❌ Twitter error: ${twitterError.message}`);
+          console.error(`⚠️  Twitter posting failed: ${twitterError.message}`);
         }
-      } else {
-        console.log(`\n⚠️  No suitable article found (all failed image validation)`);
-      }
-    }
-    
-    // Now save ALL valid sports articles to Sanity
-    console.log(`\n💾 Saving sports articles to Sanity...`);
-    
-    for (const article of validSportsArticles) {
-      try {
-        // Check if this was the article posted to Twitter
-        const wasPostedToTwitter = bestArticlePosted && bestArticlePosted.title === article.title;
-        
-        const twitterData = wasPostedToTwitter ? {
-          postedToTwitter: true,
-          twitterPostDate: new Date().toISOString(),
-          tweetId: bestArticlePosted.tweetId,
-          tweetUrl: bestArticlePosted.tweetUrl
-        } : {
-          postedToTwitter: false,
-          twitterPostDate: null,
-          tweetId: null,
-          tweetUrl: null
-        };
-        
-        const result = await client.create({
-          _type: "news",
-          title: article.title,
-          content: article.content,
-          category: "sport",
-          categoryClass: "tag-base-sm bg-primary",
-          image: article.imageUrl,
-          source: article.source || "Unknown Source",
-          link: article.link,
-          author: article.source || "Trendzlib Editorial",
-          publishedAt: new Date().toISOString(),
-          aiGenerated: false,
-          ...twitterData
-        });
-        
-        console.log(`   ✅ Saved: ${article.title}`);
-        
-        savedArticles.push({ 
-          ...article, 
-          _id: result._id,
-          contentLength: article.content.length,
-          twitter: twitterData
-        });
-        
-        await delay(300);
-      } catch (error) {
-        console.error(`   ❌ Failed to save: ${error.message}`);
       }
     }
 
-    console.log(`\n📊 SUMMARY:`);
-    console.log(`   Saved: ${savedArticles.length} articles`);
-    console.log(`   Skipped: ${skippedArticles.length} articles (duplicates)`);
-    console.log(`   Posted to Twitter: ${twitterPosts} article(s)`);
+    // Final summary
+    console.log("\n\n📊 ========== FINAL SUMMARY ==========");
+    console.log(`✅ Saved: ${savedArticles.length} articles`);
+    console.log(`⏭️  Skipped: ${skippedArticles.length} articles`);
+    console.log(`🐦 Twitter posts: ${savedArticles.filter(a => a.twitter?.postedToTwitter).length}`);
 
     res.status(200).json({
       success: true,
@@ -611,20 +555,25 @@ export default async function handler(req, res) {
         },
         totalSaved: savedArticles.length,
         totalSkipped: skippedArticles.length,
-        twitterPosts: twitterPosts
+        twitterPosts: savedArticles.filter(a => a.twitter?.postedToTwitter).length
       },
-      articles: savedArticles.map(a => ({ 
+      saved: savedArticles.map(a => ({ 
         title: a.title, 
-        source: a.source,
+        id: a._id,
         contentLength: a.contentLength,
-        postedToTwitter: a.twitter?.postedToTwitter || false,
-        tweetUrl: a.twitter?.tweetUrl || null
+        postedToTwitter: a.twitter?.postedToTwitter || false
+      })),
+      skipped: skippedArticles.map(s => ({
+        title: s.title,
+        reason: s.reason
       })),
       timestamp: new Date().toISOString()
     });
 
   } catch (err) {
-    console.error("Handler error:", err);
+    console.error("\n❌ HANDLER ERROR:", err.message);
+    console.error("Stack:", err.stack);
+    
     res.status(500).json({ 
       success: false, 
       error: err.message,
