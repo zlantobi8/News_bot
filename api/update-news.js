@@ -160,7 +160,7 @@ async function extractSkyContent(url) {
 // ------------------------
 // SCRAPERS
 // ------------------------
-async function scrapeLegit(limit = 3) {
+async function scrapeLegit(limit = 2) {
   const url = "https://www.legit.ng/entertainment/";
   const results = [];
 
@@ -213,7 +213,7 @@ async function scrapeLegit(limit = 3) {
   return results;
 }
 
-async function scrapeSkyNews(limit = 3) {
+async function scrapeSkyNews(limit =2) {
   const url = "https://www.skysports.com/football/news";
   const results = [];
 
@@ -584,7 +584,7 @@ export default async function handler(req, res) {
 
 // -----------------------------------------
 // LOCAL MODE: run as Express server
-// -----------------------------------------
+// -----------------------------------
 if (process.env.LOCAL_SERVER === "true") {
   import("express").then(({ default: express }) => {
     const app = express();
