@@ -444,7 +444,7 @@ export default async function handler(req, res) {
     let sports = [];
 
     try {
-      entertainment = await scrapeLegit(2);
+      entertainment = await scrapeLegit(1);
       console.log(`✅ Entertainment: ${entertainment.length} articles found`);
       await delay(1000);
     } catch (error) {
@@ -452,7 +452,7 @@ export default async function handler(req, res) {
     }
 
     try {
-      sports = await scrapeSkyNews(2);
+      sports = await scrapeSkyNews(1);
       console.log(`✅ Sports: ${sports.length} articles found`);
       await delay(1000);
     } catch (error) {
